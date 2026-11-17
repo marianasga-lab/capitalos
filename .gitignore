@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# CapitalOS: la base de datos es tuya, no va al repo
+prisma/*.db
+prisma/*.db-journal
+backups/
+!.env.example

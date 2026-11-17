@@ -1,0 +1,280 @@
+// CapitalOS · Esquema de datos
+// ---------------------------------------------------------------
+// Proveedor: SQLite (archivo local `prisma/capitalos.db`).
+// Para migrar a PostgreSQL/Supabase basta con cambiar `provider`
+// a "postgresql" y `DATABASE_URL`. Todo el esquema usa tipos
+// portables: Decimal para dinero, enums nativos de Prisma y
+// cuid() como identificadores (sin autoincrementos dependientes
+// del motor).
+//
+// Convención de signos:
+//   - Transaction.amount SIEMPRE es positivo. La dirección la da `type`.
+//   - Account.currentBalance: saldo a favor (activo).
+//   - CreditCard.currentBalance: deuda vigente (pasivo, positivo = debo).
+// ---------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Enums ----------
+
+enum AccountType {
+  CASH
+  DEBIT
+  INVESTMENT
+  RECEIVABLE
+}
+
+enum Currency {
+  MXN
+  USD
+  EUR
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+  REIMBURSABLE_EXPENSE
+}
+
+enum FundSource {
+  OWN_CAPITAL
+  ALLOWANCE_FAMILY
+  SHARED_SPLIT
+}
+
+enum ReimbursementStatus {
+  NOT_APPLICABLE
+  PENDING
+  PAID
+}
+
+// ---------- 1. Cuentas y activos ----------
+
+model Account {
+  id             String      @id @default(cuid())
+  name           String
+  type           AccountType
+  currency       Currency    @default(MXN)
+  currentBalance Decimal     @default(0)
+  /// Tasa anual estimada (ej. 0.105 = 10.5 %). Solo aplica a INVESTMENT.
+  interestRate   Decimal?
+  /// true = cuenta del sistema ("Cuentas por Cobrar"). No se puede borrar.
+  isSystem       Boolean     @default(false)
+  archived       Boolean     @default(false)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  outgoing       Transaction[]          @relation("TxAccount")
+  incoming       Transaction[]          @relation("TxToAccount")
+  reimbursedInto Transaction[]          @relation("TxReimburseAccount")
+  reimbursements ReimbursementPayment[]
+  savingsGoals   SavingsGoal[]
+
+  @@index([type])
+}
+
+// ---------- 2. Tarjetas de crédito ----------
+
+model CreditCard {
+  id             String   @id @default(cuid())
+  name           String
+  limit          Decimal
+  currency       Currency @default(MXN)
+  /// Día de corte (1–31). Si el mes es más corto, se usa el último día.
+  cutoffDay      Int
+  /// Día límite de pago (1–31).
+  paymentDueDay  Int
+  /// CAT / tasa anual (ej. 0.65 = 65 %).
+  interestRate   Decimal
+  /// Deuda vigente. Sube con cada cargo y baja con cada pago.
+  currentBalance Decimal  @default(0)
+  archived       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  transactions Transaction[]
+}
+
+// ---------- 3. Libro mayor unificado ----------
+
+model Transaction {
+  id          String          @id @default(cuid())
+  date        DateTime
+  amount      Decimal
+  description String
+  category    String
+  type        TransactionType
+  fundSource  FundSource      @default(OWN_CAPITAL)
+
+  /// true = gasto fijo recurrente (renta, suscripciones). Alimenta el "Runway".
+  isFixedExpense Boolean @default(false)
+
+  // ----- Multimoneda -----
+  // `amount` está en la moneda de la cuenta/tarjeta. Guardamos el tipo de
+  // cambio del día para que los reportes históricos no cambien después.
+  currency Currency @default(MXN)
+  fxToMXN  Decimal  @default(1)
+
+  /// Persona relacionada: quién aportó el dinero (ALLOWANCE_FAMILY),
+  /// quién me debe (REIMBURSABLE_EXPENSE) o con quién dividí (SHARED_SPLIT).
+  counterpartyId String?
+  counterparty   Counterparty? @relation(fields: [counterpartyId], references: [id])
+
+  /// Solo SHARED_SPLIT: lo que me toca a mí. El resto queda por cobrar.
+  myShareAmount Decimal?
+
+  // Origen (EXPENSE / REIMBURSABLE / TRANSFER) o destino (INCOME).
+  // Es opcional porque un gasto con tarjeta no sale de ninguna cuenta.
+  accountId String?
+  account   Account? @relation("TxAccount", fields: [accountId], references: [id])
+
+  // Destino de un TRANSFER. Mueve saldo sin alterar el Net Worth.
+  toAccountId String?
+  toAccount   Account? @relation("TxToAccount", fields: [toAccountId], references: [id])
+
+  // Tarjeta usada (gasto) o pagada (TRANSFER de cuenta → tarjeta).
+  creditCardId String?
+  creditCard   CreditCard? @relation(fields: [creditCardId], references: [id])
+
+  // ----- Reembolsos -----
+  reimbursementStatus ReimbursementStatus    @default(NOT_APPLICABLE)
+  /// Suma de abonos recibidos. PAID cuando llega al monto por cobrar.
+  amountReimbursed    Decimal                @default(0)
+  reimbursedAt        DateTime?
+  /// Cuenta donde entró el dinero al marcarlo como "Cobrado".
+  reimbursedToId      String?
+  reimbursedTo        Account?               @relation("TxReimburseAccount", fields: [reimbursedToId], references: [id])
+  payments            ReimbursementPayment[]
+
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date])
+  @@index([type])
+  @@index([creditCardId, date])
+  @@index([reimbursementStatus])
+  @@index([counterpartyId])
+  @@index([category, date])
+}
+
+// ---------- 3b. Personas y reembolsos parciales ----------
+// Reemplaza las pestañas "Papi Debe" y "A favor papi" de la hoja.
+// Saldo con cada persona = (lo que me debe por reembolsos y splits)
+//                        − (abonos recibidos) − (adelantos "a favor").
+
+model Counterparty {
+  id        String   @id @default(cuid())
+  name      String   @unique // Papá, Padi, Roommate…
+  /// true = familia: su dinero cuenta como ALLOWANCE_FAMILY por defecto.
+  isFamily  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  transactions Transaction[]
+  payments     ReimbursementPayment[]
+}
+
+/// Un abono de alguien que me debe. Puede cubrir uno o varios gastos.
+model ReimbursementPayment {
+  id             String       @id @default(cuid())
+  date           DateTime
+  amount         Decimal
+  counterpartyId String
+  counterparty   Counterparty @relation(fields: [counterpartyId], references: [id])
+  /// Cuenta donde entró el dinero.
+  accountId      String
+  account        Account      @relation(fields: [accountId], references: [id])
+  /// Gasto específico que liquida (opcional; si falta, se aplica al más antiguo).
+  transactionId  String?
+  transaction    Transaction? @relation(fields: [transactionId], references: [id])
+  notes          String?
+  createdAt      DateTime     @default(now())
+
+  @@index([counterpartyId, date])
+}
+
+// ---------- 3c. Categorías y presupuesto (Previsto vs Real) ----------
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+}
+
+model Category {
+  id                String       @id @default(cuid())
+  name              String
+  kind              CategoryKind
+  /// Presupuesto mensual por defecto (en MXN).
+  defaultBudget     Decimal?
+  /// Fuente de fondos sugerida al registrar (ej. "extras papi" → familia).
+  defaultFundSource FundSource   @default(OWN_CAPITAL)
+  isFixed           Boolean      @default(false)
+  archived          Boolean      @default(false)
+
+  budgets Budget[]
+
+  @@unique([name, kind])
+}
+
+/// Presupuesto previsto de una categoría en un mes concreto.
+model Budget {
+  id            String   @id @default(cuid())
+  categoryId    String
+  category      Category @relation(fields: [categoryId], references: [id])
+  month         Int
+  year          Int
+  plannedAmount Decimal
+
+  @@unique([categoryId, year, month])
+}
+
+// ---------- 4. Metas de ahorro ----------
+
+model SavingsGoal {
+  id            String    @id @default(cuid())
+  name          String
+  targetAmount  Decimal
+  currentAmount Decimal   @default(0)
+  deadline      DateTime?
+  /// Cuenta que respalda la meta (opcional).
+  accountId     String?
+  account       Account?  @relation(fields: [accountId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ---------- 5. Historial mensual ----------
+
+model MonthlySnapshot {
+  id               String   @id @default(cuid())
+  month            Int // 1–12
+  year             Int
+  totalAssets      Decimal
+  totalLiabilities Decimal
+  netWorth         Decimal
+  /// Porcentaje de ahorro del mes (0.25 = 25 %).
+  savingsRate      Decimal
+  totalIncome      Decimal  @default(0)
+  totalExpenses    Decimal  @default(0)
+  createdAt        DateTime @default(now())
+
+  @@unique([year, month])
+}
+
+// ---------- Soporte: tipo de cambio ----------
+// Todo se consolida en MXN. Se actualiza a mano desde Ajustes.
+
+model ExchangeRate {
+  currency  Currency @id
+  /// Cuántos MXN vale 1 unidad de esta moneda.
+  rateToMXN Decimal
+  updatedAt DateTime @updatedAt
+}
