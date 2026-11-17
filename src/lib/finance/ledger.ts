@@ -21,6 +21,8 @@ export type LedgerInput = {
   reimbursedToId?: string | null;
   /** SHARED_SPLIT: mi parte. La diferencia queda por cobrar. */
   myShareAmount?: D | number | string | null;
+  /** TRANSFER entre monedas: lo que llega al destino. */
+  toAmount?: D | number | string | null;
 };
 
 export type Delta =
@@ -62,7 +64,9 @@ export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Del
       out.push({ kind: "account", id: tx.accountId, amount: amt.neg() });
       if (tx.toAccountId) {
         if (tx.toAccountId === tx.accountId) throw new LedgerError("Origen y destino son iguales.");
-        out.push({ kind: "account", id: tx.toAccountId, amount: amt });
+        const received = tx.toAmount != null ? new Prisma.Decimal(tx.toAmount) : amt;
+        if (received.lte(0)) throw new LedgerError("El monto recibido debe ser mayor a 0.");
+        out.push({ kind: "account", id: tx.toAccountId, amount: received });
       } else if (tx.creditCardId) {
         // Pago de tarjeta: baja la deuda.
         out.push({ kind: "card", id: tx.creditCardId, amount: amt.neg() });

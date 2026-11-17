@@ -136,6 +136,10 @@ model Transaction {
   accountId String?
   account   Account? @relation("TxAccount", fields: [accountId], references: [id])
 
+  /// Solo TRANSFER entre monedas distintas: monto que llega al destino
+  /// (ej. salen 100 USD, llegan 1,830 MXN). Si falta, llega `amount`.
+  toAmount Decimal?
+
   // Destino de un TRANSFER. Mueve saldo sin alterar el Net Worth.
   toAccountId String?
   toAccount   Account? @relation("TxToAccount", fields: [toAccountId], references: [id])

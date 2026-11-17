@@ -8,6 +8,7 @@
  */
 import { PrismaClient, Prisma } from "@prisma/client";
 import { applyDeltas, computeDeltas, paymentDeltas } from "../src/lib/finance/ledger";
+import { computeNetWorth } from "../src/lib/finance/networth";
 
 const db = new PrismaClient();
 const d = (iso: string) => new Date(`${iso}T12:00:00`);
@@ -36,18 +37,15 @@ async function main() {
     ],
   });
 
-  // ---------- Cuentas (saldo de apertura al 30 sep 2026) ----------
-  const [banco, euros, pagare, efectivo, porCobrar] = await Promise.all([
-    db.account.create({ data: { name: "Banco Principal", type: "DEBIT", currency: "MXN", currentBalance: 18000 } }),
-    db.account.create({ data: { name: "Cuenta en Euros", type: "DEBIT", currency: "EUR", currentBalance: 450 } }),
-    db.account.create({
-      data: { name: "Pagaré 28 días", type: "INVESTMENT", currency: "MXN", currentBalance: 40000, interestRate: 0.102 },
-    }),
-    db.account.create({ data: { name: "Efectivo", type: "CASH", currency: "MXN", currentBalance: 1500 } }),
-    db.account.create({
-      data: { name: "Cuentas por Cobrar", type: "RECEIVABLE", currency: "MXN", currentBalance: 0, isSystem: true },
-    }),
-  ]);
+  // ---------- Cuentas (saldo de apertura al 31 oct 2026) ----------
+  const acc = (data: Prisma.AccountCreateInput) => db.account.create({ data });
+  const banco = await acc({ name: "Banco Principal", type: "DEBIT", currency: "MXN", currentBalance: 15000 });
+  const euros = await acc({ name: "Cuenta en Euros", type: "DEBIT", currency: "EUR", currentBalance: 450 });
+  const pagare = await acc({ name: "Pagaré 28 días", type: "INVESTMENT", currency: "MXN", currentBalance: 45000, interestRate: 0.102 });
+  const efectivo = await acc({ name: "Efectivo pesos", type: "CASH", currency: "MXN", currentBalance: 1500 });
+  const efectivoUSD = await acc({ name: "Efectivo dólares", type: "CASH", currency: "USD", currentBalance: 300 });
+  await acc({ name: "Efectivo euros", type: "CASH", currency: "EUR", currentBalance: 120 });
+  const porCobrar = await acc({ name: "Cuentas por Cobrar", type: "RECEIVABLE", currency: "MXN", currentBalance: 0, isSystem: true });
 
   // ---------- Tarjetas (cortes distintos) ----------
   const oro = await db.creditCard.create({
@@ -67,7 +65,7 @@ async function main() {
     ["Súper", 3000, false, "OWN_CAPITAL"],
     ["Salidas", 2000, false, "OWN_CAPITAL"],
     ["Transporte", 800, false, "OWN_CAPITAL"],
-    ["Teléfono", 700, true, "OWN_CAPITAL"],
+    ["Teléfono", 400, true, "OWN_CAPITAL"],
     ["Suscripciones", 650, true, "OWN_CAPITAL"],
     ["Suministros", 900, true, "OWN_CAPITAL"],
     ["Salud", 1500, false, "ALLOWANCE_FAMILY"],
@@ -82,7 +80,7 @@ async function main() {
     const cat = await db.category.create({
       data: { name, kind: "EXPENSE", defaultBudget: budget, isFixed, defaultFundSource: fs },
     });
-    for (const month of [10, 11]) {
+    for (const month of [11]) {
       await db.budget.create({ data: { categoryId: cat.id, year: 2026, month, plannedAmount: budget } });
     }
   }
@@ -93,30 +91,27 @@ async function main() {
   }
 
   // ---------- Movimientos ----------
-  type Tx = Omit<Prisma.TransactionUncheckedCreateInput, "amount" | "myShareAmount"> & { amount: number; myShareAmount?: number };
+  type Tx = Omit<Prisma.TransactionUncheckedCreateInput, "amount" | "myShareAmount" | "toAmount"> & { amount: number; myShareAmount?: number; toAmount?: number };
   const txs: Tx[] = [
-    // Octubre
-    { date: d("2026-10-01"), amount: 9500, description: "Renta octubre", category: "Renta", type: "EXPENSE", accountId: banco.id, isFixedExpense: true },
-    { date: d("2026-10-04"), amount: 8000, description: "Pago proyecto web (cliente freelance)", category: "Freelance", type: "INCOME", accountId: banco.id },
-    { date: d("2026-10-05"), amount: 4000, description: "Sueldo fijo", category: "Sueldo", type: "INCOME", accountId: banco.id },
-    { date: d("2026-10-07"), amount: 2000, description: "Mesada octubre", category: "Apoyo familiar", type: "INCOME", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
-    { date: d("2026-10-10"), amount: 1850, description: "Súper quincenal", category: "Súper", type: "EXPENSE", accountId: banco.id },
-    { date: d("2026-10-12"), amount: 649, description: "Suscripciones (streaming y nube)", category: "Suscripciones", type: "EXPENSE", creditCardId: oro.id, isFixedExpense: true },
-    { date: d("2026-10-15"), amount: 10000, description: "Aportación a pagaré", category: "Ahorro", type: "TRANSFER", accountId: banco.id, toAccountId: pagare.id },
-    { date: d("2026-10-18"), amount: 1537, description: "Medicinas de Papá", category: "Salud", type: "REIMBURSABLE_EXPENSE", creditCardId: digital.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY", reimbursementStatus: "PENDING" },
-    { date: d("2026-10-22"), amount: 1200, description: "Albergue y tren (compartido con Padi)", category: "Viajes", type: "EXPENSE", creditCardId: digital.id, fundSource: "SHARED_SPLIT", counterpartyId: padi.id, myShareAmount: 600 },
-    { date: d("2026-10-28"), amount: 3200, description: "Pago Tarjeta Oro", category: "Pago de tarjeta", type: "TRANSFER", accountId: banco.id, creditCardId: oro.id },
-    // Noviembre
     { date: d("2026-11-01"), amount: 9500, description: "Renta noviembre", category: "Renta", type: "EXPENSE", accountId: banco.id, isFixedExpense: true },
-    { date: d("2026-11-03"), amount: 32, description: "Plan móvil", category: "Teléfono", type: "EXPENSE", accountId: euros.id, currency: "EUR", fxToMXN: EUR_MXN, isFixedExpense: true },
+    { date: d("2026-11-02"), amount: 649, description: "Suscripciones (streaming y nube)", category: "Suscripciones", type: "EXPENSE", creditCardId: oro.id, isFixedExpense: true },
+    { date: d("2026-11-03"), amount: 12, description: "App con cobro en euros", category: "Suscripciones", type: "EXPENSE", accountId: euros.id, currency: "EUR", fxToMXN: EUR_MXN, isFixedExpense: true },
+    { date: d("2026-11-03"), amount: 399, description: "Plan de celular", category: "Teléfono", type: "EXPENSE", accountId: banco.id, isFixedExpense: true },
+    { date: d("2026-11-04"), amount: 8000, description: "Pago proyecto web (cliente freelance)", category: "Freelance", type: "INCOME", accountId: banco.id },
     { date: d("2026-11-05"), amount: 4000, description: "Sueldo fijo", category: "Sueldo", type: "INCOME", accountId: banco.id },
     { date: d("2026-11-06"), amount: 3000, description: "Mesada noviembre", category: "Apoyo familiar", type: "INCOME", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
+    { date: d("2026-11-06"), amount: 5000, description: "Aportación a pagaré", category: "Ahorro", type: "TRANSFER", accountId: banco.id, toAccountId: pagare.id },
     { date: d("2026-11-07"), amount: 1200, description: "Cena de cumpleaños (con mesada)", category: "Salidas", type: "EXPENSE", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
     { date: d("2026-11-08"), amount: 4040, description: "Pensión noviembre (la adelanté yo)", category: "Educación", type: "REIMBURSABLE_EXPENSE", accountId: banco.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY", reimbursementStatus: "PENDING" },
+    { date: d("2026-11-09"), amount: 1537, description: "Medicinas de Papá", category: "Salud", type: "REIMBURSABLE_EXPENSE", creditCardId: digital.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY", reimbursementStatus: "PENDING" },
     { date: d("2026-11-10"), amount: 890, description: "Súper", category: "Súper", type: "EXPENSE", creditCardId: oro.id },
+    { date: d("2026-11-11"), amount: 100, toAmount: 1830, description: "Cambié dólares a pesos", category: "Cambio de divisa", type: "TRANSFER", accountId: efectivoUSD.id, toAccountId: efectivo.id, currency: "USD", fxToMXN: 18.3 },
     { date: d("2026-11-12"), amount: 560, description: "Uber al aeropuerto", category: "Transporte", type: "EXPENSE", creditCardId: digital.id },
     { date: d("2026-11-13"), amount: 350, description: "Tacos con amigas", category: "Salidas", type: "EXPENSE", accountId: efectivo.id },
+    { date: d("2026-11-14"), amount: 2400, description: "Hospedaje fin de semana (compartido con Padi)", category: "Viajes", type: "EXPENSE", creditCardId: digital.id, fundSource: "SHARED_SPLIT", counterpartyId: padi.id, myShareAmount: 1200 },
     { date: d("2026-11-15"), amount: 750, description: "Boletos de concierto de Padi", category: "Salidas", type: "REIMBURSABLE_EXPENSE", creditCardId: oro.id, counterpartyId: padi.id, reimbursementStatus: "PENDING" },
+    { date: d("2026-11-16"), amount: 2400, description: "Pago Tarjeta Oro", category: "Pago de tarjeta", type: "TRANSFER", accountId: banco.id, creditCardId: oro.id },
+    { date: d("2026-11-17"), amount: 640, description: "Mercado del domingo", category: "Súper", type: "EXPENSE", accountId: efectivo.id },
   ];
 
   const created: Record<string, string> = {};
@@ -130,9 +125,9 @@ async function main() {
 
   // ---------- Abonos (incluye uno parcial) ----------
   const payments = [
-    { date: d("2026-10-30"), amount: 600, counterpartyId: padi.id, accountId: banco.id, txKey: "Albergue y tren (compartido con Padi)", notes: "Transferencia de Padi" },
-    { date: d("2026-11-02"), amount: 1537, counterpartyId: papa.id, accountId: banco.id, txKey: "Medicinas de Papá" },
+    { date: d("2026-11-11"), amount: 1537, counterpartyId: papa.id, accountId: banco.id, txKey: "Medicinas de Papá", notes: undefined },
     { date: d("2026-11-14"), amount: 2500, counterpartyId: papa.id, accountId: banco.id, txKey: "Pensión noviembre (la adelanté yo)", notes: "Abono parcial" },
+    { date: d("2026-11-16"), amount: 1200, counterpartyId: padi.id, accountId: banco.id, txKey: "Hospedaje fin de semana (compartido con Padi)", notes: "Transferencia de Padi" },
   ];
   for (const p of payments) {
     await db.$transaction(async (tx) => {
@@ -160,19 +155,8 @@ async function main() {
     ],
   });
 
-  // ---------- Historial (ilustrativo) ----------
-  const history = [
-    [5, 61200, 3100, 0.18],
-    [6, 63900, 2800, 0.21],
-    [7, 62500, 4500, 0.09],
-    [8, 66800, 3900, 0.24],
-    [9, 70400, 2400, 0.27],
-  ] as const;
-  for (const [month, assets, liab, rate] of history) {
-    await db.monthlySnapshot.create({
-      data: { year: 2026, month, totalAssets: assets, totalLiabilities: liab, netWorth: assets - liab, savingsRate: rate },
-    });
-  }
+  // El historial mensual (MonthlySnapshot) se genera al cerrar cada mes.
+  // Arrancamos en noviembre 2026; los meses anteriores se importarán aparte.
 
   // Resumen en consola
   const accounts = await db.account.findMany({ orderBy: { name: "asc" } });
@@ -180,6 +164,12 @@ async function main() {
   console.log("\nSaldos tras el seed:");
   for (const a of accounts) console.log(`  ${a.name.padEnd(22)} ${a.currency} ${a.currentBalance.toFixed(2)}`);
   for (const c of cards) console.log(`  ${c.name.padEnd(22)} deuda ${c.currentBalance.toFixed(2)}`);
+  const rates = Object.fromEntries((await db.exchangeRate.findMany()).map((r) => [r.currency, r.rateToMXN])) as Parameters<typeof computeNetWorth>[2];
+  const nw = computeNetWorth(accounts, cards, rates);
+  const f = (x: Prisma.Decimal) => x.toNumber().toLocaleString("es-MX", { style: "currency", currency: "MXN" });
+  console.log(`\nPatrimonio: ${f(nw.netWorth)}  (activos ${f(nw.totalAssets)} − deudas ${f(nw.totalLiabilities)})`);
+  console.log(`Efectivo total: ${f(nw.cashMXN)} · Liquidez: ${f(nw.liquidity)} · Por cobrar: ${f(nw.receivables)}`);
+  for (const b of nw.byCurrency) console.log(`  ${b.currency}: efectivo ${b.cash.toFixed(2)} · banco ${b.bank.toFixed(2)} · inversión ${b.investments.toFixed(2)} → ${f(b.totalMXN)}`);
   console.log(`  Movimientos: ${await db.transaction.count()} · Abonos: ${await db.reimbursementPayment.count()}`);
 }
 
