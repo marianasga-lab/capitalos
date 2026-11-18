@@ -1,28 +1,36 @@
 /**
  * Reglas del libro mayor: cómo cada movimiento afecta los saldos.
- * Es la única fuente de verdad. La usan el seed y las Server Actions,
+ * Es la única fuente de verdad. La usan el seed y los servicios,
  * siempre dentro de una transacción de base de datos.
  *
  * Signos:
- *  - Account.currentBalance  → activo (+ = tengo)
- *  - CreditCard.currentBalance → pasivo (+ = debo)
+ *  - Account.currentBalance    → activo (+ = tengo), en la moneda de la cuenta
+ *  - CreditCard.currentBalance → pasivo (+ = debo), en la moneda de la tarjeta
+ *  - "Cuentas por Cobrar" siempre está en MXN: todo lo que entra ahí se
+ *    convierte con el tipo de cambio del movimiento (`fxToMXN`).
+ *
+ * Reembolsos: el movimiento SIEMPRE manda lo adeudado a "por cobrar",
+ * sin importar su estado. Los abonos (ReimbursementPayment) son los que
+ * mueven el dinero de "por cobrar" a una cuenta real. Así editar o borrar
+ * nunca depende del estado.
  */
 import { Prisma } from "@prisma/client";
 
 type D = Prisma.Decimal;
+type Num = D | number | string;
 
 export type LedgerInput = {
   type: "INCOME" | "EXPENSE" | "TRANSFER" | "REIMBURSABLE_EXPENSE";
-  amount: D | number | string;
+  amount: Num;
+  /** Tipo de cambio a MXN de la moneda del movimiento (1 si es MXN). */
+  fxToMXN?: Num | null;
   accountId?: string | null;
   toAccountId?: string | null;
   creditCardId?: string | null;
-  reimbursementStatus?: "NOT_APPLICABLE" | "PENDING" | "PAID";
-  reimbursedToId?: string | null;
-  /** SHARED_SPLIT: mi parte. La diferencia queda por cobrar. */
-  myShareAmount?: D | number | string | null;
+  /** Gasto compartido: mi parte. La diferencia queda por cobrar. */
+  myShareAmount?: Num | null;
   /** TRANSFER entre monedas: lo que llega al destino. */
-  toAmount?: D | number | string | null;
+  toAmount?: Num | null;
 };
 
 export type Delta =
@@ -31,10 +39,22 @@ export type Delta =
 
 export class LedgerError extends Error {}
 
+const dec = (v: Num) => new Prisma.Decimal(v);
+
+/** Cuánto me deben por este movimiento, en MXN (0 si no aplica). */
+export function owedMXN(tx: Pick<LedgerInput, "type" | "amount" | "fxToMXN" | "myShareAmount">): D {
+  const amt = dec(tx.amount);
+  const fx = dec(tx.fxToMXN ?? 1);
+  if (tx.type === "REIMBURSABLE_EXPENSE") return amt.mul(fx);
+  if (tx.type === "EXPENSE" && tx.myShareAmount != null) return amt.minus(dec(tx.myShareAmount)).mul(fx);
+  return new Prisma.Decimal(0);
+}
+
 /** Devuelve los cambios de saldo que provoca un movimiento. */
 export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Delta[] {
-  const amt = new Prisma.Decimal(tx.amount);
+  const amt = dec(tx.amount);
   if (amt.lte(0)) throw new LedgerError("El monto debe ser mayor a 0.");
+  if (dec(tx.fxToMXN ?? 1).lte(0)) throw new LedgerError("El tipo de cambio debe ser mayor a 0.");
 
   const out: Delta[] = [];
   const spend = () => {
@@ -52,10 +72,8 @@ export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Del
     case "EXPENSE":
       spend();
       if (tx.myShareAmount != null) {
-        const mine = new Prisma.Decimal(tx.myShareAmount);
+        const mine = dec(tx.myShareAmount);
         if (mine.lt(0) || mine.gt(amt)) throw new LedgerError("Tu parte no puede superar el total.");
-        const owed = amt.minus(mine);
-        if (owed.gt(0)) out.push({ kind: "account", id: receivableAccountId, amount: owed });
       }
       break;
 
@@ -64,7 +82,7 @@ export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Del
       out.push({ kind: "account", id: tx.accountId, amount: amt.neg() });
       if (tx.toAccountId) {
         if (tx.toAccountId === tx.accountId) throw new LedgerError("Origen y destino son iguales.");
-        const received = tx.toAmount != null ? new Prisma.Decimal(tx.toAmount) : amt;
+        const received = tx.toAmount != null ? dec(tx.toAmount) : amt;
         if (received.lte(0)) throw new LedgerError("El monto recibido debe ser mayor a 0.");
         out.push({ kind: "account", id: tx.toAccountId, amount: received });
       } else if (tx.creditCardId) {
@@ -75,30 +93,23 @@ export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Del
 
     case "REIMBURSABLE_EXPENSE":
       spend();
-      if (tx.reimbursementStatus === "PAID") {
-        // Ya me pagaron: el dinero regresó a una cuenta.
-        const dest = tx.reimbursedToId ?? tx.accountId;
-        if (!dest) throw new LedgerError("Indica la cuenta donde entró el reembolso.");
-        out.push({ kind: "account", id: dest, amount: amt });
-      } else {
-        // Pendiente: no es pérdida de patrimonio, es dinero por cobrar.
-        out.push({ kind: "account", id: receivableAccountId, amount: amt });
-      }
       break;
   }
+
+  const owed = owedMXN(tx);
+  if (owed.gt(0)) out.push({ kind: "account", id: receivableAccountId, amount: owed });
   return out;
 }
 
-/** Un abono de alguien que me debía: sale de "por cobrar" y entra a mi cuenta. */
-export function paymentDeltas(
-  amount: D | number | string,
-  accountId: string,
-  receivableAccountId: string,
-): Delta[] {
-  const amt = new Prisma.Decimal(amount);
+/**
+ * Un abono de alguien que me debía: sale de "por cobrar" (MXN) y entra a
+ * una cuenta real en su moneda. `fxToMXN` es el tipo de cambio de esa cuenta.
+ */
+export function paymentDeltas(amount: Num, accountId: string, receivableAccountId: string, fxToMXN: Num = 1): Delta[] {
+  const amt = dec(amount);
   if (amt.lte(0)) throw new LedgerError("El abono debe ser mayor a 0.");
   return [
-    { kind: "account", id: receivableAccountId, amount: amt.neg() },
+    { kind: "account", id: receivableAccountId, amount: amt.mul(dec(fxToMXN)).neg() },
     { kind: "account", id: accountId, amount: amt },
   ];
 }
@@ -112,15 +123,9 @@ export function invertDeltas(deltas: Delta[]): Delta[] {
 export async function applyDeltas(tx: Prisma.TransactionClient, deltas: Delta[]) {
   for (const d of deltas) {
     if (d.kind === "account") {
-      await tx.account.update({
-        where: { id: d.id },
-        data: { currentBalance: { increment: d.amount } },
-      });
+      await tx.account.update({ where: { id: d.id }, data: { currentBalance: { increment: d.amount } } });
     } else {
-      await tx.creditCard.update({
-        where: { id: d.id },
-        data: { currentBalance: { increment: d.amount } },
-      });
+      await tx.creditCard.update({ where: { id: d.id }, data: { currentBalance: { increment: d.amount } } });
     }
   }
 }

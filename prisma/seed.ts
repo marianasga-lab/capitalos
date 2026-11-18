@@ -7,11 +7,13 @@
  * igual que lo hará la app. Así el seed también prueba las reglas.
  */
 import { PrismaClient, Prisma } from "@prisma/client";
-import { applyDeltas, computeDeltas, paymentDeltas } from "../src/lib/finance/ledger";
+import { paymentInput, transactionInput, type TransactionInput } from "../src/lib/validation";
+import { createTransaction } from "../src/server/services/transactions";
+import { recordPayment } from "../src/server/services/reimbursements";
 import { computeNetWorth } from "../src/lib/finance/networth";
 
 const db = new PrismaClient();
-const d = (iso: string) => new Date(`${iso}T12:00:00`);
+const d = (iso: string) => new Date(`${iso}T12:00:00`); // solo para metas
 const EUR_MXN = 21.5; // aproximado, editable en Ajustes
 
 async function main() {
@@ -45,7 +47,7 @@ async function main() {
   const efectivo = await acc({ name: "Efectivo pesos", type: "CASH", currency: "MXN", currentBalance: 1500 });
   const efectivoUSD = await acc({ name: "Efectivo dólares", type: "CASH", currency: "USD", currentBalance: 300 });
   await acc({ name: "Efectivo euros", type: "CASH", currency: "EUR", currentBalance: 120 });
-  const porCobrar = await acc({ name: "Cuentas por Cobrar", type: "RECEIVABLE", currency: "MXN", currentBalance: 0, isSystem: true });
+  await acc({ name: "Cuentas por Cobrar", type: "RECEIVABLE", currency: "MXN", currentBalance: 0, isSystem: true });
 
   // ---------- Tarjetas (cortes distintos) ----------
   const oro = await db.creditCard.create({
@@ -90,61 +92,43 @@ async function main() {
     });
   }
 
-  // ---------- Movimientos ----------
-  type Tx = Omit<Prisma.TransactionUncheckedCreateInput, "amount" | "myShareAmount" | "toAmount"> & { amount: number; myShareAmount?: number; toAmount?: number };
-  const txs: Tx[] = [
-    { date: d("2026-11-01"), amount: 9500, description: "Renta noviembre", category: "Renta", type: "EXPENSE", accountId: banco.id, isFixedExpense: true },
-    { date: d("2026-11-02"), amount: 649, description: "Suscripciones (streaming y nube)", category: "Suscripciones", type: "EXPENSE", creditCardId: oro.id, isFixedExpense: true },
-    { date: d("2026-11-03"), amount: 12, description: "App con cobro en euros", category: "Suscripciones", type: "EXPENSE", accountId: euros.id, currency: "EUR", fxToMXN: EUR_MXN, isFixedExpense: true },
-    { date: d("2026-11-03"), amount: 399, description: "Plan de celular", category: "Teléfono", type: "EXPENSE", accountId: banco.id, isFixedExpense: true },
-    { date: d("2026-11-04"), amount: 8000, description: "Pago proyecto web (cliente freelance)", category: "Freelance", type: "INCOME", accountId: banco.id },
-    { date: d("2026-11-05"), amount: 4000, description: "Sueldo fijo", category: "Sueldo", type: "INCOME", accountId: banco.id },
-    { date: d("2026-11-06"), amount: 3000, description: "Mesada noviembre", category: "Apoyo familiar", type: "INCOME", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
-    { date: d("2026-11-06"), amount: 5000, description: "Aportación a pagaré", category: "Ahorro", type: "TRANSFER", accountId: banco.id, toAccountId: pagare.id },
-    { date: d("2026-11-07"), amount: 1200, description: "Cena de cumpleaños (con mesada)", category: "Salidas", type: "EXPENSE", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
-    { date: d("2026-11-08"), amount: 4040, description: "Pensión noviembre (la adelanté yo)", category: "Educación", type: "REIMBURSABLE_EXPENSE", accountId: banco.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY", reimbursementStatus: "PENDING" },
-    { date: d("2026-11-09"), amount: 1537, description: "Medicinas de Papá", category: "Salud", type: "REIMBURSABLE_EXPENSE", creditCardId: digital.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY", reimbursementStatus: "PENDING" },
-    { date: d("2026-11-10"), amount: 890, description: "Súper", category: "Súper", type: "EXPENSE", creditCardId: oro.id },
-    { date: d("2026-11-11"), amount: 100, toAmount: 1830, description: "Cambié dólares a pesos", category: "Cambio de divisa", type: "TRANSFER", accountId: efectivoUSD.id, toAccountId: efectivo.id, currency: "USD", fxToMXN: 18.3 },
-    { date: d("2026-11-12"), amount: 560, description: "Uber al aeropuerto", category: "Transporte", type: "EXPENSE", creditCardId: digital.id },
-    { date: d("2026-11-13"), amount: 350, description: "Tacos con amigas", category: "Salidas", type: "EXPENSE", accountId: efectivo.id },
-    { date: d("2026-11-14"), amount: 2400, description: "Hospedaje fin de semana (compartido con Padi)", category: "Viajes", type: "EXPENSE", creditCardId: digital.id, fundSource: "SHARED_SPLIT", counterpartyId: padi.id, myShareAmount: 1200 },
-    { date: d("2026-11-15"), amount: 750, description: "Boletos de concierto de Padi", category: "Salidas", type: "REIMBURSABLE_EXPENSE", creditCardId: oro.id, counterpartyId: padi.id, reimbursementStatus: "PENDING" },
-    { date: d("2026-11-16"), amount: 2400, description: "Pago Tarjeta Oro", category: "Pago de tarjeta", type: "TRANSFER", accountId: banco.id, creditCardId: oro.id },
-    { date: d("2026-11-17"), amount: 640, description: "Mercado del domingo", category: "Súper", type: "EXPENSE", accountId: efectivo.id },
+  // ---------- Movimientos (pasan por el mismo servicio que usa la app) ----------
+  const txs: TransactionInput[] = [
+    { date: "2026-11-01", amount: 9500, description: "Renta noviembre", category: "Renta", type: "EXPENSE", accountId: banco.id, isFixedExpense: true },
+    { date: "2026-11-02", amount: 649, description: "Suscripciones (streaming y nube)", category: "Suscripciones", type: "EXPENSE", creditCardId: oro.id, isFixedExpense: true },
+    { date: "2026-11-03", amount: 12, description: "App con cobro en euros", category: "Suscripciones", type: "EXPENSE", accountId: euros.id, fxToMXN: String(EUR_MXN), isFixedExpense: true },
+    { date: "2026-11-03", amount: 399, description: "Plan de celular", category: "Teléfono", type: "EXPENSE", accountId: banco.id, isFixedExpense: true },
+    { date: "2026-11-04", amount: 8000, description: "Pago proyecto web (cliente freelance)", category: "Freelance", type: "INCOME", accountId: banco.id },
+    { date: "2026-11-05", amount: 4000, description: "Sueldo fijo", category: "Sueldo", type: "INCOME", accountId: banco.id },
+    { date: "2026-11-06", amount: 3000, description: "Mesada noviembre", category: "Apoyo familiar", type: "INCOME", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
+    { date: "2026-11-06", amount: 5000, description: "Aportación a pagaré", category: "Ahorro", type: "TRANSFER", accountId: banco.id, toAccountId: pagare.id },
+    { date: "2026-11-07", amount: 1200, description: "Cena de cumpleaños (con mesada)", category: "Salidas", type: "EXPENSE", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
+    { date: "2026-11-08", amount: 4040, description: "Pensión noviembre (la adelanté yo)", category: "Educación", type: "REIMBURSABLE_EXPENSE", accountId: banco.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY" },
+    { date: "2026-11-09", amount: 1537, description: "Medicinas de Papá", category: "Salud", type: "REIMBURSABLE_EXPENSE", creditCardId: digital.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY" },
+    { date: "2026-11-10", amount: 890, description: "Súper", category: "Súper", type: "EXPENSE", creditCardId: oro.id },
+    { date: "2026-11-11", amount: 100, toAmount: 1830, description: "Cambié dólares a pesos", category: "Cambio de divisa", type: "TRANSFER", accountId: efectivoUSD.id, toAccountId: efectivo.id, fxToMXN: "18.3" },
+    { date: "2026-11-12", amount: 560, description: "Uber al aeropuerto", category: "Transporte", type: "EXPENSE", creditCardId: digital.id },
+    { date: "2026-11-13", amount: 350, description: "Tacos con amigas", category: "Salidas", type: "EXPENSE", accountId: efectivo.id },
+    { date: "2026-11-14", amount: 2400, description: "Hospedaje fin de semana (compartido con Padi)", category: "Viajes", type: "EXPENSE", creditCardId: digital.id, fundSource: "SHARED_SPLIT", counterpartyId: padi.id, myShareAmount: 1200 },
+    { date: "2026-11-15", amount: 750, description: "Boletos de concierto de Padi", category: "Salidas", type: "REIMBURSABLE_EXPENSE", creditCardId: oro.id, counterpartyId: padi.id },
+    { date: "2026-11-16", amount: 2400, description: "Pago Tarjeta Oro", category: "Pago de tarjeta", type: "TRANSFER", accountId: banco.id, creditCardId: oro.id },
+    { date: "2026-11-17", amount: 640, description: "Mercado del domingo", category: "Súper", type: "EXPENSE", accountId: efectivo.id },
   ];
 
   const created: Record<string, string> = {};
   for (const t of txs) {
-    await db.$transaction(async (tx) => {
-      const row = await tx.transaction.create({ data: t });
-      await applyDeltas(tx, computeDeltas(t, porCobrar.id));
-      created[t.description] = row.id;
-    });
+    const row = await createTransaction(db, transactionInput.parse(t));
+    created[t.description] = row.id;
   }
 
   // ---------- Abonos (incluye uno parcial) ----------
   const payments = [
-    { date: d("2026-11-11"), amount: 1537, counterpartyId: papa.id, accountId: banco.id, txKey: "Medicinas de Papá", notes: undefined },
-    { date: d("2026-11-14"), amount: 2500, counterpartyId: papa.id, accountId: banco.id, txKey: "Pensión noviembre (la adelanté yo)", notes: "Abono parcial" },
-    { date: d("2026-11-16"), amount: 1200, counterpartyId: padi.id, accountId: banco.id, txKey: "Hospedaje fin de semana (compartido con Padi)", notes: "Transferencia de Padi" },
+    { date: "2026-11-11", amount: 1537, counterpartyId: papa.id, accountId: banco.id, tx: "Medicinas de Papá" },
+    { date: "2026-11-14", amount: 2500, counterpartyId: papa.id, accountId: banco.id, tx: "Pensión noviembre (la adelanté yo)", notes: "Abono parcial" },
+    { date: "2026-11-16", amount: 1200, counterpartyId: padi.id, accountId: banco.id, tx: "Hospedaje fin de semana (compartido con Padi)", notes: "Transferencia de Padi" },
   ];
-  for (const p of payments) {
-    await db.$transaction(async (tx) => {
-      const transactionId = created[p.txKey];
-      await tx.reimbursementPayment.create({
-        data: { date: p.date, amount: p.amount, counterpartyId: p.counterpartyId, accountId: p.accountId, transactionId, notes: p.notes },
-      });
-      const parent = await tx.transaction.update({
-        where: { id: transactionId },
-        data: { amountReimbursed: { increment: p.amount } },
-      });
-      const owed = parent.myShareAmount ? parent.amount.minus(parent.myShareAmount) : parent.amount;
-      if (parent.type === "REIMBURSABLE_EXPENSE" && parent.amountReimbursed.gte(owed)) {
-        await tx.transaction.update({ where: { id: transactionId }, data: { reimbursementStatus: "PAID", reimbursedAt: p.date, reimbursedToId: p.accountId } });
-      }
-      await applyDeltas(tx, paymentDeltas(p.amount, p.accountId, porCobrar.id));
-    });
+  for (const { tx, ...p } of payments) {
+    await recordPayment(db, paymentInput.parse({ ...p, transactionId: created[tx] }));
   }
 
   // ---------- Metas ----------

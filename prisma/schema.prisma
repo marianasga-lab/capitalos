@@ -150,7 +150,7 @@ model Transaction {
 
   // ----- Reembolsos -----
   reimbursementStatus ReimbursementStatus    @default(NOT_APPLICABLE)
-  /// Suma de abonos recibidos. PAID cuando llega al monto por cobrar.
+  /// Suma de abonos recibidos, en MXN. PAID cuando cubre lo adeudado.
   amountReimbursed    Decimal                @default(0)
   reimbursedAt        DateTime?
   /// Cuenta donde entró el dinero al marcarlo como "Cobrado".
@@ -191,6 +191,8 @@ model ReimbursementPayment {
   id             String       @id @default(cuid())
   date           DateTime
   amount         Decimal
+  /// Tipo de cambio a MXN de la cuenta que recibió el abono, ese día.
+  fxToMXN        Decimal      @default(1)
   counterpartyId String
   counterparty   Counterparty @relation(fields: [counterpartyId], references: [id])
   /// Cuenta donde entró el dinero.
