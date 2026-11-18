@@ -99,7 +99,7 @@ function FundCard({ f }: { f: PlainFund }) {
           <p className={`text-sm ${f.state === "OVERPAID" ? "text-warning" : f.state === "BALANCED" ? "text-positive" : ""}`}>{f.message}</p>
         </div>
         <div className="flex flex-wrap gap-2 md:justify-end">
-          <OpenEntryButton mode="FUND" fundId={f.id} className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground">+ Depósito o pago</OpenEntryButton>
+          <OpenEntryButton mode="FUND" prefill={{ fundId: f.id }} className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground">+ Depósito o pago</OpenEntryButton>
           <CloseFundButton id={f.id} state={f.state} balance={f.balance} owner={f.owner} />
         </div>
       </div>

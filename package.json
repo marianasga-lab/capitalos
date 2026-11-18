@@ -12,7 +12,9 @@
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset --force",
     "test": "vitest run",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "db:demo": "tsx prisma/seed.ts --demo --force",
+    "db:vacio": "tsx prisma/seed.ts --empty --force"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -48,6 +50,6 @@
     "vitest": "^5.1.0"
   },
   "prisma": {
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts --demo"
   }
 }

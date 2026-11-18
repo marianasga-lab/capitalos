@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { collectTransactionAction, deleteTransactionAction } from "@/actions/transactions";
 import { money, shortDate, type CurrencyCode } from "@/lib/format";
 import type { PlainTx } from "@/server/queries";
-import { useQuickEntry, type EntryMode } from "./quick-entry/context";
+import { useQuickEntry, type EntryMode, type Prefill } from "./quick-entry/context";
 
 /** Botón "Cobrado": liquida lo pendiente con un clic. */
 export function CollectButton({ transactionId, label = "Cobrado" }: { transactionId: string; label?: string }) {
@@ -28,10 +28,10 @@ export function CollectButton({ transactionId, label = "Cobrado" }: { transactio
   );
 }
 
-export function OpenEntryButton({ mode, fundId, children, className }: { mode?: EntryMode; fundId?: string; children: React.ReactNode; className?: string }) {
+export function OpenEntryButton({ mode, prefill, children, className }: { mode?: EntryMode; prefill?: Prefill; children: React.ReactNode; className?: string }) {
   const { openEntry } = useQuickEntry();
   return (
-    <button onClick={() => openEntry(mode, { fundId })} className={className ?? "text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"}>
+    <button onClick={() => openEntry(mode, prefill)} className={className ?? "text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"}>
       {children}
     </button>
   );

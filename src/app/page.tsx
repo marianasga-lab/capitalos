@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AlertTriangle } from "lucide-react";
 import { Suspense } from "react";
 import { connection } from "next/server";
 import { getDashboard } from "@/server/queries";
@@ -35,6 +36,28 @@ async function Dashboard() {
           Ver patrimonio por moneda →
         </Link>
       </header>
+
+      {/* ----- Alertas de tarjetas (≤ 5 días o vencidas) ----- */}
+      {d.cardAlerts.length > 0 && (
+        <div role="status" className="flex flex-col gap-2">
+          {d.cardAlerts.map((a) => (
+            <Link
+              key={a.id}
+              href="/tarjetas"
+              className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm transition-colors hover:bg-card ${a.overdue ? "border-negative/50 bg-negative/5" : "border-warning/50 bg-warning/10"}`}
+            >
+              <span className="flex items-center gap-2">
+                <AlertTriangle className={`size-4 ${a.overdue ? "text-negative" : "text-warning"}`} aria-hidden />
+                <span>
+                  <strong className="font-medium">{a.name}:</strong>{" "}
+                  {a.overdue ? `el pago venció hace ${-a.daysUntilDue} ${a.daysUntilDue === -1 ? "día" : "días"}` : a.daysUntilDue === 0 ? "el pago vence hoy" : `el pago vence en ${a.daysUntilDue} ${a.daysUntilDue === 1 ? "día" : "días"}`}
+                </span>
+              </span>
+              <span className="num font-semibold">{money(a.amount)} para no generar intereses →</span>
+            </Link>
+          ))}
+        </div>
+      )}
 
       {/* ----- KPIs ----- */}
       <div className="grid overflow-hidden rounded-lg border bg-card sm:grid-cols-2 lg:grid-cols-4 [&>*]:border-border max-sm:[&>*+*]:border-t sm:max-lg:[&>*:nth-child(n+3)]:border-t sm:[&>*:nth-child(even)]:border-l lg:[&>*+*]:border-l">

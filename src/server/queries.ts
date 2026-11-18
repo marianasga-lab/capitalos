@@ -5,6 +5,7 @@ import "server-only";
  */
 import { db } from "@/lib/db";
 import { computeNetWorth } from "@/lib/finance/networth";
+import { cardCycle, type CardMovement } from "@/lib/finance/cards";
 import { getRates } from "./services/common";
 import { monthStats } from "./services/reports";
 import { counterpartyBalances } from "./services/reimbursements";
@@ -51,6 +52,9 @@ export async function getDashboard() {
     fundSummaries(db, { status: "OPEN" }),
     listTransactions(db, { take: 8 }),
   ]);
+  const cardAlerts = (await getCardsOverview())
+    .filter((c) => c.cycle.status === "DUE_SOON" || c.cycle.status === "OVERDUE")
+    .map((c) => ({ id: c.id, name: c.name, amount: c.cycle.remainingNoInterest, dueDate: c.cycle.dueDate, daysUntilDue: c.cycle.daysUntilDue, overdue: c.cycle.status === "OVERDUE" }));
 
   // ----- Runway -----
   // Liquidez neta propia: efectivo + débito − dinero de terceros − deuda de tarjetas.
@@ -108,6 +112,7 @@ export async function getDashboard() {
         })),
       })),
     funds: funds.map(plainFund),
+    cardAlerts,
     recent: recent.rows.map(plainTx),
   };
 }
@@ -228,3 +233,117 @@ export async function getFundsPage() {
   const [all, people] = await Promise.all([fundSummaries(db), db.counterparty.findMany({ orderBy: { name: "asc" } })]);
   return { funds: all.map(plainFund), people: people.map((p) => ({ id: p.id, name: p.name })) };
 }
+
+// ---------- Tarjetas ----------
+
+export async function getCardsOverview(today = new Date()) {
+  const cards = await db.creditCard.findMany({
+    where: { archived: false },
+    orderBy: { name: "asc" },
+    include: { transactions: { select: { date: true, amount: true, type: true } } },
+  });
+  return cards.map((c) => {
+    const moves: CardMovement[] = c.transactions.map((t) => ({
+      date: t.date,
+      amount: num(t.amount),
+      kind: t.type === "TRANSFER" ? "payment" : "charge",
+    }));
+    const cycle = cardCycle(c, moves, today, num(c.currentBalance));
+    return {
+      id: c.id,
+      name: c.name,
+      currency: c.currency,
+      limit: num(c.limit),
+      debt: num(c.currentBalance),
+      available: num(c.limit.minus(c.currentBalance)),
+      annualRate: num(c.interestRate),
+      cutoffDay: c.cutoffDay,
+      paymentDueDay: c.paymentDueDay,
+      cycle: {
+        ...cycle,
+        statementStart: cycle.statementStart.toISOString(),
+        statementEnd: cycle.statementEnd.toISOString(),
+        dueDate: cycle.dueDate.toISOString(),
+        nextCutoff: cycle.nextCutoff.toISOString(),
+      },
+    };
+  });
+}
+export type CardOverview = Awaited<ReturnType<typeof getCardsOverview>>[number];
+
+// ---------- Metas ----------
+export async function getGoalsPage(today = new Date()) {
+  const [goals, snapshots] = await Promise.all([
+    db.savingsGoal.findMany({ orderBy: [{ deadline: "asc" }, { createdAt: "asc" }], include: { account: true } }),
+    db.monthlySnapshot.findMany({ orderBy: [{ year: "desc" }, { month: "desc" }], take: 3 }),
+  ]);
+  // Ritmo de ahorro: promedio de los últimos 3 meses cerrados; si no hay, el mes en curso.
+  let pace: number;
+  let paceSource: string;
+  if (snapshots.length) {
+    pace = snapshots.reduce((s, x) => s + num(x.totalIncome) - num(x.totalExpenses), 0) / snapshots.length;
+    paceSource = `promedio de ${snapshots.length} ${snapshots.length === 1 ? "mes cerrado" : "meses cerrados"}`;
+  } else {
+    const { year, month } = currentPeriod(today);
+    const s = await monthStats(db, year, month);
+    pace = num(s.savings);
+    paceSource = "lo ahorrado este mes (aún no hay meses cerrados)";
+  }
+  const monthsUntil = (d: Date) => Math.max(0, (d.getFullYear() - today.getFullYear()) * 12 + d.getMonth() - today.getMonth() + (d.getDate() >= today.getDate() ? 0 : -1));
+
+  return {
+    pace,
+    paceSource,
+    goals: goals.map((g) => {
+      const target = num(g.targetAmount);
+      const current = num(g.currentAmount);
+      const remaining = Math.max(0, target - current);
+      const monthsLeft = g.deadline ? monthsUntil(g.deadline) : null;
+      const neededPerMonth = monthsLeft != null ? (monthsLeft > 0 ? remaining / monthsLeft : remaining) : null;
+      const projectedMonths = remaining === 0 ? 0 : pace > 0 ? Math.ceil(remaining / pace) : null;
+      const projectedDate = projectedMonths != null ? new Date(today.getFullYear(), today.getMonth() + projectedMonths, 1).toISOString() : null;
+      return {
+        id: g.id,
+        name: g.name,
+        target,
+        current,
+        remaining,
+        progress: target > 0 ? Math.min(1, current / target) : 0,
+        deadline: g.deadline?.toISOString() ?? null,
+        monthsLeft,
+        neededPerMonth,
+        projectedMonths,
+        projectedDate,
+        // Sin fecha no hay "a tiempo"; con ahorro ≤ 0 y fecha, va atrasada.
+        onTrack: remaining === 0 ? true : monthsLeft == null ? null : projectedMonths == null ? false : projectedMonths <= monthsLeft,
+        account: g.account ? { id: g.account.id, name: g.account.name, balance: num(g.account.currentBalance), currency: g.account.currency } : null,
+      };
+    }),
+    accounts: (await db.account.findMany({ where: { archived: false, isSystem: false }, orderBy: { name: "asc" } })).map((a) => ({ id: a.id, name: a.name })),
+  };
+}
+export type GoalsPage = Awaited<ReturnType<typeof getGoalsPage>>;
+
+// ---------- Ajustes ----------
+export async function getSettings() {
+  const [accounts, cards, rates, snapshots] = await Promise.all([
+    db.account.findMany({ where: { isSystem: false }, orderBy: [{ archived: "asc" }, { type: "asc" }, { name: "asc" }] }),
+    db.creditCard.findMany({ orderBy: [{ archived: "asc" }, { name: "asc" }] }),
+    db.exchangeRate.findMany(),
+    db.monthlySnapshot.findMany({ orderBy: [{ year: "desc" }, { month: "desc" }], take: 24 }),
+  ]);
+  return {
+    accounts: accounts.map((a) => ({
+      id: a.id, name: a.name, type: a.type, currency: a.currency, archived: a.archived,
+      balance: num(a.currentBalance), interestRate: a.interestRate ? num(a.interestRate) : null,
+    })),
+    cards: cards.map((c) => ({
+      id: c.id, name: c.name, currency: c.currency, archived: c.archived, limit: num(c.limit), debt: num(c.currentBalance),
+      cutoffDay: c.cutoffDay, paymentDueDay: c.paymentDueDay, interestRate: num(c.interestRate),
+    })),
+    rates: Object.fromEntries(rates.filter((r) => r.currency !== "MXN").map((r) => [r.currency, { rate: num(r.rateToMXN), updatedAt: r.updatedAt.toISOString() }])) as Record<"USD" | "EUR", { rate: number; updatedAt: string } | undefined>,
+    snapshots: snapshots.map((s) => ({ year: s.year, month: s.month, netWorth: num(s.netWorth), savingsRate: num(s.savingsRate), createdAt: s.createdAt.toISOString() })),
+    period: currentPeriod(),
+  };
+}
+export type Settings = Awaited<ReturnType<typeof getSettings>>;

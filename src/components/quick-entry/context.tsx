@@ -4,9 +4,10 @@ import type { PlainTx } from "@/server/queries";
 
 export type EntryMode = "EXPENSE" | "INCOME" | "TRANSFER" | "REIMBURSABLE_EXPENSE" | "FUND";
 
-type State = { open: boolean; mode: EntryMode; editing: PlainTx | null; fundId?: string; session: number };
+export type Prefill = { fundId?: string; cardId?: string; amount?: number; description?: string };
+type State = { open: boolean; mode: EntryMode; editing: PlainTx | null; prefill: Prefill; session: number };
 type Ctx = State & {
-  openEntry: (mode?: EntryMode, opts?: { fundId?: string }) => void;
+  openEntry: (mode?: EntryMode, prefill?: Prefill) => void;
   editEntry: (tx: PlainTx) => void;
   close: () => void;
 };
@@ -14,14 +15,14 @@ type Ctx = State & {
 const QuickEntryContext = createContext<Ctx | null>(null);
 
 export function QuickEntryProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<State>({ open: false, mode: "EXPENSE", editing: null, session: 0 });
+  const [state, setState] = useState<State>({ open: false, mode: "EXPENSE", editing: null, prefill: {}, session: 0 });
 
-  const openEntry = useCallback((mode: EntryMode = "EXPENSE", opts: { fundId?: string } = {}) => {
-    setState((s) => ({ open: true, mode, editing: null, fundId: opts.fundId, session: s.session + 1 }));
+  const openEntry = useCallback((mode: EntryMode = "EXPENSE", prefill: Prefill = {}) => {
+    setState((s) => ({ open: true, mode, editing: null, prefill, session: s.session + 1 }));
   }, []);
   const editEntry = useCallback((tx: PlainTx) => {
     const mode: EntryMode = tx.type === "FUND_DEPOSIT" || tx.type === "FUND_PAYMENT" ? "FUND" : tx.type;
-    setState((s) => ({ open: true, mode, editing: tx, session: s.session + 1 }));
+    setState((s) => ({ open: true, mode, editing: tx, prefill: {}, session: s.session + 1 }));
   }, []);
   const close = useCallback(() => setState((s) => ({ ...s, open: false })), []);
 
@@ -30,7 +31,7 @@ export function QuickEntryProvider({ children }: { children: React.ReactNode }) 
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setState((s) => (s.open ? { ...s, open: false } : { open: true, mode: "EXPENSE", editing: null, session: s.session + 1 }));
+        setState((s) => (s.open ? { ...s, open: false } : { open: true, mode: "EXPENSE", editing: null, prefill: {}, session: s.session + 1 }));
       }
     };
     window.addEventListener("keydown", onKey);

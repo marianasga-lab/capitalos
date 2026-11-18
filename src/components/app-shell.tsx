@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowLeftRight, Landmark, LayoutGrid, Plus, Wallet } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { ArrowLeftRight, CreditCard, Landmark, LayoutGrid, Plus, Settings, Target, Wallet } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
 import { useQuickEntry } from "./quick-entry/context";
 
@@ -9,7 +10,10 @@ const NAV = [
   { href: "/", label: "Resumen", Icon: LayoutGrid },
   { href: "/patrimonio", label: "Patrimonio", Icon: Landmark },
   { href: "/movimientos", label: "Movimientos", Icon: ArrowLeftRight },
+  { href: "/tarjetas", label: "Tarjetas", Icon: CreditCard },
   { href: "/bolsas", label: "Bolsas", Icon: Wallet },
+  { href: "/metas", label: "Metas", Icon: Target },
+  { href: "/ajustes", label: "Ajustes", Icon: Settings },
 ];
 
 function NewEntryButton({ compact = false }: { compact?: boolean }) {
@@ -33,6 +37,13 @@ function NewEntryButton({ compact = false }: { compact?: boolean }) {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isActive = (href: string) => (href === "/" ? pathname === "/" : pathname.startsWith(href));
+  // En celular, la barra de secciones se desliza: muestra la sección activa.
+  const mobileNav = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = mobileNav.current;
+    const active = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (nav && active) nav.scrollLeft = active.offsetLeft - nav.clientWidth / 2 + active.clientWidth / 2;
+  }, [pathname]);
 
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[232px_1fr]">
@@ -72,7 +83,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <NewEntryButton compact />
           </div>
         </div>
-        <nav aria-label="Principal" className="flex gap-1 overflow-x-auto px-3 pb-2">
+        <nav ref={mobileNav} aria-label="Principal" className="flex gap-1 overflow-x-auto px-3 pb-2">
           {NAV.map(({ href, label }) => (
             <Link
               key={href}

@@ -17,7 +17,53 @@ const db = new PrismaClient();
 const d = (iso: string) => new Date(`${iso}T12:00:00`); // solo para metas
 const EUR_MXN = 21.5; // aproximado, editable en Ajustes
 
+// ---------- Catálogo base (también para el modo vacío) ----------
+const expenseCats: [string, number, boolean, "OWN_CAPITAL" | "ALLOWANCE_FAMILY"][] = [
+  ["Renta", 9500, true, "OWN_CAPITAL"],
+  ["Súper", 3000, false, "OWN_CAPITAL"],
+  ["Salidas", 2000, false, "OWN_CAPITAL"],
+  ["Transporte", 800, false, "OWN_CAPITAL"],
+  ["Teléfono", 400, true, "OWN_CAPITAL"],
+  ["Suscripciones", 650, true, "OWN_CAPITAL"],
+  ["Suministros", 900, true, "OWN_CAPITAL"],
+  ["Salud", 1500, false, "ALLOWANCE_FAMILY"],
+  ["Educación", 0, false, "ALLOWANCE_FAMILY"],
+  ["Viajes", 1500, false, "OWN_CAPITAL"],
+  ["Regalos", 500, false, "OWN_CAPITAL"],
+  ["Personal", 800, false, "OWN_CAPITAL"],
+];
+const incomeCats = ["Sueldo", "Freelance", "Apoyo familiar", "Intereses", "Reembolsos"];
+
+
+async function createCategories() {
+  for (const [name, budget, isFixed, fs] of expenseCats) {
+    await db.category.create({ data: { name, kind: "EXPENSE", defaultBudget: budget, isFixed, defaultFundSource: fs } });
+  }
+  for (const name of incomeCats) {
+    await db.category.create({
+      data: { name, kind: "INCOME", defaultFundSource: name === "Apoyo familiar" ? "ALLOWANCE_FAMILY" : "OWN_CAPITAL" },
+    });
+  }
+}
+
+/**
+ * Uso:
+ *   npm run db:demo   → borra todo y carga datos de prueba (pide --force)
+ *   npm run db:vacio  → borra todo y deja la app lista para tus datos reales
+ *   (automático tras `prisma migrate reset`: solo carga si la base está vacía)
+ */
+const args = process.argv.slice(2);
+const MODE = args.includes("--empty") ? "empty" : "demo";
+const FORCE = args.includes("--force");
+
 async function main() {
+  const existing = (await db.transaction.count()) + (await db.account.count({ where: { isSystem: false } }));
+  if (existing > 0 && !FORCE) {
+    console.log("La base ya tiene datos: no se cargó nada (para protegerlos).");
+    console.log("Si de verdad quieres borrar todo, usa: npm run db:demo  o  npm run db:vacio");
+    return;
+  }
+
   // Limpieza (orden por dependencias) para que el seed sea repetible.
   await db.$transaction([
     db.reimbursementPayment.deleteMany(),
@@ -41,6 +87,13 @@ async function main() {
     ],
   });
 
+  if (MODE === "empty") {
+    await db.account.create({ data: { name: "Cuentas por Cobrar", type: "RECEIVABLE", currency: "MXN", isSystem: true } });
+    await createCategories();
+    console.log("Base vacía y lista. Crea tus cuentas y tarjetas en Ajustes.");
+    return;
+  }
+
   // ---------- Cuentas (saldo de apertura al 31 oct 2026) ----------
   const acc = (data: Prisma.AccountCreateInput) => db.account.create({ data });
   const banco = await acc({ name: "Banco Principal", type: "DEBIT", currency: "MXN", currentBalance: 15000 });
@@ -53,10 +106,10 @@ async function main() {
 
   // ---------- Tarjetas (cortes distintos) ----------
   const oro = await db.creditCard.create({
-    data: { name: "Tarjeta Oro", limit: 45000, cutoffDay: 3, paymentDueDay: 21, interestRate: 0.58, currentBalance: 2400 },
+    data: { name: "Tarjeta Oro", limit: 45000, cutoffDay: 15, paymentDueDay: 23, interestRate: 0.58, currentBalance: 2400 },
   });
   const digital = await db.creditCard.create({
-    data: { name: "Tarjeta Digital", limit: 25000, cutoffDay: 20, paymentDueDay: 10, interestRate: 0.72, currentBalance: 0 },
+    data: { name: "Tarjeta Digital", limit: 25000, cutoffDay: 12, paymentDueDay: 2, interestRate: 0.72, currentBalance: 0 },
   });
 
   // ---------- Personas ----------
@@ -68,34 +121,9 @@ async function main() {
   const pension = await createFund(db, { name: "Pensión noviembre", counterpartyId: papa.id, expectedAmount: "4040", counterpartyName: null, notes: null });
 
   // ---------- Categorías + presupuesto (Previsto vs Real) ----------
-  const expenseCats: [string, number, boolean, "OWN_CAPITAL" | "ALLOWANCE_FAMILY"][] = [
-    ["Renta", 9500, true, "OWN_CAPITAL"],
-    ["Súper", 3000, false, "OWN_CAPITAL"],
-    ["Salidas", 2000, false, "OWN_CAPITAL"],
-    ["Transporte", 800, false, "OWN_CAPITAL"],
-    ["Teléfono", 400, true, "OWN_CAPITAL"],
-    ["Suscripciones", 650, true, "OWN_CAPITAL"],
-    ["Suministros", 900, true, "OWN_CAPITAL"],
-    ["Salud", 1500, false, "ALLOWANCE_FAMILY"],
-    ["Educación", 0, false, "ALLOWANCE_FAMILY"],
-    ["Viajes", 1500, false, "OWN_CAPITAL"],
-    ["Regalos", 500, false, "OWN_CAPITAL"],
-    ["Personal", 800, false, "OWN_CAPITAL"],
-  ];
-  const incomeCats = ["Sueldo", "Freelance", "Apoyo familiar", "Intereses", "Reembolsos"];
-
-  for (const [name, budget, isFixed, fs] of expenseCats) {
-    const cat = await db.category.create({
-      data: { name, kind: "EXPENSE", defaultBudget: budget, isFixed, defaultFundSource: fs },
-    });
-    for (const month of [11]) {
-      await db.budget.create({ data: { categoryId: cat.id, year: 2026, month, plannedAmount: budget } });
-    }
-  }
-  for (const name of incomeCats) {
-    await db.category.create({
-      data: { name, kind: "INCOME", defaultFundSource: name === "Apoyo familiar" ? "ALLOWANCE_FAMILY" : "OWN_CAPITAL" },
-    });
+  await createCategories();
+  for (const c of await db.category.findMany({ where: { kind: "EXPENSE" } })) {
+    await db.budget.create({ data: { categoryId: c.id, year: 2026, month: 11, plannedAmount: c.defaultBudget ?? 0 } });
   }
 
   // ---------- Movimientos (pasan por el mismo servicio que usa la app) ----------

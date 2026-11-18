@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { createTransactionAction, updateTransactionAction } from "@/actions/transactions";
 import { isoLocal, money, type CurrencyCode } from "@/lib/format";
 import type { EntryOptions, PlainTx } from "@/server/queries";
-import { useQuickEntry, type EntryMode } from "./context";
+import { useQuickEntry, type EntryMode, type Prefill } from "./context";
 
 const MODES: { value: EntryMode; label: string; hint: string }[] = [
   { value: "EXPENSE", label: "Gasto", hint: "Dinero que sale y es tuyo" },
@@ -65,15 +65,15 @@ export function QuickEntryDialog({ options }: { options: EntryOptions }) {
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <DialogContent className="max-h-[92dvh] gap-0 overflow-y-auto overflow-x-hidden p-0 sm:max-w-[560px]">
         {/* key nuevo en cada apertura: el formulario arranca limpio o precargado */}
-        <EntryForm key={session} options={options} editing={rest.editing} initialMode={rest.mode} initialFund={rest.fundId} close={close} />
+        <EntryForm key={session} options={options} editing={rest.editing} initialMode={rest.mode} prefill={rest.prefill} close={close} />
       </DialogContent>
     </Dialog>
   );
 }
 
-type FormProps = { options: EntryOptions; editing: PlainTx | null; initialMode: EntryMode; initialFund?: string; close: () => void };
+type FormProps = { options: EntryOptions; editing: PlainTx | null; initialMode: EntryMode; prefill: Prefill; close: () => void };
 
-function EntryForm({ options, editing, initialMode, initialFund, close }: FormProps) {
+function EntryForm({ options, editing, initialMode, prefill, close }: FormProps) {
   const [mode, setMode] = useState<EntryMode>(() =>
     editing ? (editing.type === "FUND_DEPOSIT" || editing.type === "FUND_PAYMENT" ? "FUND" : (editing.type as EntryMode)) : initialMode,
   );
@@ -101,7 +101,13 @@ function EntryForm({ options, editing, initialMode, initialFund, close }: FormPr
           fundDirection: (editing.type === "FUND_PAYMENT" ? "OUT" : "IN") as "IN" | "OUT",
           notes: editing.notes ?? "",
         }
-      : { ...blank(firstDebit?.id), fundId: initialFund ?? options.funds[0]?.id ?? "" },
+      : {
+          ...blank(firstDebit?.id),
+          fundId: prefill.fundId ?? options.funds[0]?.id ?? "",
+          ...(prefill.cardId && { toTarget: `card:${prefill.cardId}` }),
+          ...(prefill.amount != null && prefill.amount > 0 && { amount: prefill.amount.toFixed(2) }),
+          ...(prefill.description && { description: prefill.description }),
+        },
   );
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }));
 
