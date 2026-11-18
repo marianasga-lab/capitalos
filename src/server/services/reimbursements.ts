@@ -6,7 +6,7 @@
  *  - deletePayment: revierte un abono capturado por error.
  */
 import { Prisma, PrismaClient, type Transaction } from "@prisma/client";
-import { applyDeltas, owedMXN, paymentDeltas } from "@/lib/finance/ledger";
+import { applyDeltas, owedMXN, paymentDeltas, toCents } from "@/lib/finance/ledger";
 import { dec, DomainError, EPS, getRate, getReceivableAccount, parseDate, todayISO, ZERO, type Db } from "./common";
 import { statusFor } from "./transactions";
 
@@ -80,7 +80,7 @@ export async function recordPayment(db: PrismaClient, input: PaymentData) {
         }),
       );
       const appliedMXN = part.mul(fx);
-      const reimbursed = t.amountReimbursed.plus(appliedMXN);
+      const reimbursed = toCents(t.amountReimbursed.plus(appliedMXN));
       const status = statusFor(remaining.plus(t.amountReimbursed), reimbursed);
       await tx.transaction.update({
         where: { id: t.id },
@@ -144,7 +144,7 @@ export async function deletePayment(db: PrismaClient, id: string) {
     );
     if (p.transactionId) {
       const t = await tx.transaction.findUniqueOrThrow({ where: { id: p.transactionId } });
-      const reimbursed = Prisma.Decimal.max(ZERO, t.amountReimbursed.minus(p.amount.mul(p.fxToMXN)));
+      const reimbursed = toCents(Prisma.Decimal.max(ZERO, t.amountReimbursed.minus(p.amount.mul(p.fxToMXN))));
       const status = statusFor(owedMXN(t), reimbursed);
       await tx.transaction.update({
         where: { id: t.id },

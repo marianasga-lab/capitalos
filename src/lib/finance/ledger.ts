@@ -9,6 +9,13 @@
  *  - "Cuentas por Cobrar" siempre está en MXN: todo lo que entra ahí se
  *    convierte con el tipo de cambio del movimiento (`fxToMXN`).
  *
+ * Bolsas (Fund): dinero de un tercero que yo administro. Su saldo es en MXN.
+ *  - FUND_DEPOSIT: entra a mi cuenta y sube la bolsa. Patrimonio igual.
+ *  - FUND_PAYMENT: sale de mi cuenta/tarjeta y baja la bolsa. Patrimonio igual.
+ *  - Cierre con diferencia, sin cuenta ni tarjeta (solo cambia de dueño):
+ *      INCOME + fundId  → el sobrante pasa a ser mío (baja la bolsa)
+ *      EXPENSE + fundId → absorbo lo que pagué de más (sube la bolsa)
+ *
  * Reembolsos: el movimiento SIEMPRE manda lo adeudado a "por cobrar",
  * sin importar su estado. Los abonos (ReimbursementPayment) son los que
  * mueven el dinero de "por cobrar" a una cuenta real. Así editar o borrar
@@ -20,7 +27,7 @@ type D = Prisma.Decimal;
 type Num = D | number | string;
 
 export type LedgerInput = {
-  type: "INCOME" | "EXPENSE" | "TRANSFER" | "REIMBURSABLE_EXPENSE";
+  type: "INCOME" | "EXPENSE" | "TRANSFER" | "REIMBURSABLE_EXPENSE" | "FUND_DEPOSIT" | "FUND_PAYMENT";
   amount: Num;
   /** Tipo de cambio a MXN de la moneda del movimiento (1 si es MXN). */
   fxToMXN?: Num | null;
@@ -31,11 +38,14 @@ export type LedgerInput = {
   myShareAmount?: Num | null;
   /** TRANSFER entre monedas: lo que llega al destino. */
   toAmount?: Num | null;
+  /** Bolsa de dinero de un tercero. */
+  fundId?: string | null;
 };
 
 export type Delta =
   | { kind: "account"; id: string; amount: D }
-  | { kind: "card"; id: string; amount: D };
+  | { kind: "card"; id: string; amount: D }
+  | { kind: "fund"; id: string; amount: D };
 
 export class LedgerError extends Error {}
 
@@ -57,6 +67,12 @@ export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Del
   if (dec(tx.fxToMXN ?? 1).lte(0)) throw new LedgerError("El tipo de cambio debe ser mayor a 0.");
 
   const out: Delta[] = [];
+  const fx = dec(tx.fxToMXN ?? 1);
+  const fund = (sign: 1 | -1) => {
+    if (!tx.fundId) throw new LedgerError("Elige la bolsa.");
+    out.push({ kind: "fund", id: tx.fundId, amount: amt.mul(fx).mul(sign) });
+  };
+  const settlement = !!tx.fundId && !tx.accountId && !tx.creditCardId;
   const spend = () => {
     if (tx.creditCardId) out.push({ kind: "card", id: tx.creditCardId, amount: amt });
     else if (tx.accountId) out.push({ kind: "account", id: tx.accountId, amount: amt.neg() });
@@ -65,11 +81,13 @@ export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Del
 
   switch (tx.type) {
     case "INCOME":
+      if (settlement) { fund(-1); break; }
       if (!tx.accountId) throw new LedgerError("Un ingreso necesita cuenta destino.");
       out.push({ kind: "account", id: tx.accountId, amount: amt });
       break;
 
     case "EXPENSE":
+      if (settlement) { fund(1); break; }
       spend();
       if (tx.myShareAmount != null) {
         const mine = dec(tx.myShareAmount);
@@ -93,6 +111,17 @@ export function computeDeltas(tx: LedgerInput, receivableAccountId: string): Del
 
     case "REIMBURSABLE_EXPENSE":
       spend();
+      break;
+
+    case "FUND_DEPOSIT":
+      if (!tx.accountId) throw new LedgerError("Elige la cuenta donde entró el depósito.");
+      out.push({ kind: "account", id: tx.accountId, amount: amt });
+      fund(1);
+      break;
+
+    case "FUND_PAYMENT":
+      spend();
+      fund(-1);
       break;
   }
 
@@ -119,13 +148,25 @@ export function invertDeltas(deltas: Delta[]): Delta[] {
   return deltas.map((d) => ({ ...d, amount: d.amount.neg() }));
 }
 
-/** Aplica deltas dentro de un cliente transaccional de Prisma. */
+/** Redondeo a centavos (bancario no: medio centavo hacia arriba, como en un estado de cuenta). */
+export const toCents = (v: D) => v.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+
+/**
+ * Aplica deltas dentro de un cliente transaccional de Prisma.
+ * Lee, suma con Decimal exacto y guarda redondeado a centavos. SQLite guarda
+ * los decimales como flotantes: con `increment` el error se acumularía.
+ */
 export async function applyDeltas(tx: Prisma.TransactionClient, deltas: Delta[]) {
   for (const d of deltas) {
     if (d.kind === "account") {
-      await tx.account.update({ where: { id: d.id }, data: { currentBalance: { increment: d.amount } } });
+      const { currentBalance } = await tx.account.findUniqueOrThrow({ where: { id: d.id }, select: { currentBalance: true } });
+      await tx.account.update({ where: { id: d.id }, data: { currentBalance: toCents(currentBalance.plus(d.amount)) } });
+    } else if (d.kind === "fund") {
+      const { balance } = await tx.fund.findUniqueOrThrow({ where: { id: d.id }, select: { balance: true } });
+      await tx.fund.update({ where: { id: d.id }, data: { balance: toCents(balance.plus(d.amount)) } });
     } else {
-      await tx.creditCard.update({ where: { id: d.id }, data: { currentBalance: { increment: d.amount } } });
+      const { currentBalance } = await tx.creditCard.findUniqueOrThrow({ where: { id: d.id }, select: { currentBalance: true } });
+      await tx.creditCard.update({ where: { id: d.id }, data: { currentBalance: toCents(currentBalance.plus(d.amount)) } });
     }
   }
 }

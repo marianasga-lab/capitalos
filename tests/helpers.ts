@@ -6,7 +6,7 @@ export const db = new PrismaClient();
 /** Borra todo y crea un escenario mínimo. */
 export async function fixture() {
   await db.$transaction([
-    db.reimbursementPayment.deleteMany(), db.transaction.deleteMany(), db.budget.deleteMany(),
+    db.reimbursementPayment.deleteMany(), db.transaction.deleteMany(), db.fund.deleteMany(), db.budget.deleteMany(),
     db.category.deleteMany(), db.savingsGoal.deleteMany(), db.monthlySnapshot.deleteMany(),
     db.counterparty.deleteMany(), db.creditCard.deleteMany(), db.account.deleteMany(), db.exchangeRate.deleteMany(),
   ]);

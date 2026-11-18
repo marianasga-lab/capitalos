@@ -199,3 +199,10 @@ describe("reportes", () => {
     expect(await db.monthlySnapshot.count()).toBe(1);
   });
 });
+
+describe("precisión", () => {
+  it("200 gastos de $0.10 dejan el saldo exacto al centavo", async () => {
+    for (let i = 0; i < 200; i++) await createTransaction(db, tx({ type: "EXPENSE", amount: "0.10", accountId: f.banco.id }));
+    expect((await db.account.findUniqueOrThrow({ where: { id: f.banco.id } })).currentBalance.toString()).toBe("9980");
+  });
+});

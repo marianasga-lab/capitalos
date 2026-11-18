@@ -5,6 +5,9 @@
  *  - EXPENSE: todo, salvo la parte de otros en un gasto compartido.
  *  - REIMBURSABLE_EXPENSE: no es gasto tuyo (te lo van a pagar); se reporta aparte.
  *  - TRANSFER y ajustes de conciliación: no son ingreso ni gasto.
+ *  - FUND_DEPOSIT / FUND_PAYMENT: dinero de terceros; se reporta aparte.
+ *    Solo el cierre de una bolsa con diferencia cuenta (sobrante = ingreso
+ *    familiar; lo que absorbí = gasto propio).
  */
 import { Prisma } from "@prisma/client";
 import { computeNetWorth } from "@/lib/finance/networth";
@@ -18,6 +21,7 @@ export async function monthStats(db: Db, year: number, month: number) {
   });
 
   let income = ZERO, incomeOwn = ZERO, incomeFamily = ZERO;
+  let fundsIn = ZERO, fundsOut = ZERO;
   let expenses = ZERO, expensesOwn = ZERO, expensesFamily = ZERO, fixedExpenses = ZERO, reimbursable = ZERO;
   const byCategory = new Map<string, D>();
 
@@ -37,6 +41,10 @@ export async function monthStats(db: Db, year: number, month: number) {
       byCategory.set(t.category, (byCategory.get(t.category) ?? ZERO).plus(v));
     } else if (t.type === "REIMBURSABLE_EXPENSE") {
       reimbursable = reimbursable.plus(mxn(t.amount));
+    } else if (t.type === "FUND_DEPOSIT") {
+      fundsIn = fundsIn.plus(mxn(t.amount));
+    } else if (t.type === "FUND_PAYMENT") {
+      fundsOut = fundsOut.plus(mxn(t.amount));
     }
   }
 
@@ -56,6 +64,8 @@ export async function monthStats(db: Db, year: number, month: number) {
     income, incomeOwn, incomeFamily,
     expenses, expensesOwn, expensesFamily, fixedExpenses,
     reimbursable,
+    /** Dinero de terceros recibido y pagado en el mes (no cuenta en ingresos/gastos). */
+    fundsIn, fundsOut,
     savings,
     savingsRate: income.gt(0) ? savings.div(income) : ZERO,
     budget: budgetRows.sort((a, b) => b.actual.comparedTo(a.actual)),
@@ -64,8 +74,10 @@ export async function monthStats(db: Db, year: number, month: number) {
 
 /** Patrimonio actual con los saldos guardados. */
 export async function currentNetWorth(db: Db) {
-  const [accounts, cards, rates] = await Promise.all([db.account.findMany(), db.creditCard.findMany(), getRates(db)]);
-  return computeNetWorth(accounts, cards, rates);
+  const [accounts, cards, rates, funds] = await Promise.all([
+    db.account.findMany(), db.creditCard.findMany(), getRates(db), db.fund.findMany(),
+  ]);
+  return computeNetWorth(accounts, cards, rates, funds);
 }
 
 /**

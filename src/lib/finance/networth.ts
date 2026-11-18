@@ -3,7 +3,10 @@
  * Función pura: recibe cuentas, tarjetas y tipos de cambio; no toca la BD.
  *
  *   Net Worth = Activos (todas las cuentas, incluida "por cobrar")
- *             − Pasivos (deuda de tarjetas)
+ *             − Pasivos (deuda de tarjetas + dinero de terceros que tengo)
+ *
+ * Bolsas de terceros: si tengo dinero de Papá sin usar, está en mi banco
+ * pero no es mío → pasivo. Si pagué de más, me lo deben → por cobrar.
  */
 import { Prisma } from "@prisma/client";
 
@@ -22,6 +25,7 @@ export type AccountLike = {
 };
 export type CardLike = { id: string; name: string; currency: Currency; currentBalance: D; archived?: boolean };
 export type Rates = Record<Currency, D>;
+export type FundLike = { id: string; name: string; balance: D; status?: "OPEN" | "CLOSED" };
 
 export type CurrencyBucket = {
   currency: Currency;
@@ -47,6 +51,12 @@ export type NetWorth = {
   /** Rendimiento mensual estimado de inversiones (MXN). */
   investmentMonthlyYield: D;
   receivables: D;
+  /** Dinero de terceros (bolsas con saldo a favor de ellos), MXN. */
+  thirdPartyHeld: D;
+  /** Lo que me deben por bolsas en las que pagué de más, MXN. */
+  fundsOwedToMe: D;
+  /** Liquidez descontando el dinero de terceros: lo que de verdad es mío. */
+  ownLiquidity: D;
   byCurrency: CurrencyBucket[];
 };
 
@@ -56,7 +66,7 @@ export function toMXN(amount: D, currency: Currency, rates: Rates): D {
   return amount.mul(r);
 }
 
-export function computeNetWorth(accounts: AccountLike[], cards: CardLike[], rates: Rates): NetWorth {
+export function computeNetWorth(accounts: AccountLike[], cards: CardLike[], rates: Rates, funds: FundLike[] = []): NetWorth {
   const buckets = new Map<Currency, CurrencyBucket>();
   const bucket = (c: Currency) => {
     if (!buckets.has(c)) {
@@ -94,9 +104,18 @@ export function computeNetWorth(accounts: AccountLike[], cards: CardLike[], rate
     }
   }
 
-  const totalLiabilities = cards
+  const cardDebt = cards
     .filter((c) => !c.archived)
     .reduce((s, c) => s.plus(toMXN(c.currentBalance, c.currency, rates)), ZERO);
+
+  let thirdPartyHeld = ZERO, fundsOwedToMe = ZERO;
+  for (const f of funds) {
+    if (f.balance.gt(0)) thirdPartyHeld = thirdPartyHeld.plus(f.balance);
+    else fundsOwedToMe = fundsOwedToMe.plus(f.balance.neg());
+  }
+  totalAssets = totalAssets.plus(fundsOwedToMe);
+  receivables = receivables.plus(fundsOwedToMe);
+  const totalLiabilities = cardDebt.plus(thirdPartyHeld);
 
   const order: Currency[] = ["MXN", "USD", "EUR"];
   return {
@@ -108,6 +127,9 @@ export function computeNetWorth(accounts: AccountLike[], cards: CardLike[], rate
     investments,
     investmentMonthlyYield: yieldM,
     receivables,
+    thirdPartyHeld,
+    fundsOwedToMe,
+    ownLiquidity: liquidity.minus(thirdPartyHeld),
     byCurrency: order.filter((c) => buckets.has(c)).map((c) => buckets.get(c)!),
   };
 }

@@ -42,6 +42,15 @@ enum TransactionType {
   EXPENSE
   TRANSFER
   REIMBURSABLE_EXPENSE
+  /// Dinero de un tercero que entra a mi cuenta para un fin (no es ingreso).
+  FUND_DEPOSIT
+  /// Pago hecho con dinero de un tercero (no es gasto).
+  FUND_PAYMENT
+}
+
+enum FundStatus {
+  OPEN
+  CLOSED
 }
 
 enum FundSource {
@@ -128,6 +137,11 @@ model Transaction {
   counterpartyId String?
   counterparty   Counterparty? @relation(fields: [counterpartyId], references: [id])
 
+  /// Bolsa de dinero de un tercero (FUND_DEPOSIT / FUND_PAYMENT, o el
+  /// ajuste al cerrarla con diferencia).
+  fundId String?
+  fund   Fund?   @relation(fields: [fundId], references: [id])
+
   /// Solo SHARED_SPLIT: lo que me toca a mí. El resto queda por cobrar.
   myShareAmount Decimal?
 
@@ -184,6 +198,33 @@ model Counterparty {
 
   transactions Transaction[]
   payments     ReimbursementPayment[]
+  funds        Fund[]
+}
+
+// ---------- 3d. Bolsas: dinero de terceros que yo administro ----------
+// Ej. "Colegiatura Tec · Papá". Papá deposita, yo pago. No es ingreso ni gasto.
+//   balance > 0 → tengo dinero suyo sin usar (es un pasivo: no es mío)
+//   balance < 0 → pagué de más: me debe la diferencia
+//   balance = 0 → cuadra
+
+model Fund {
+  id             String       @id @default(cuid())
+  name           String
+  counterpartyId String
+  counterparty   Counterparty @relation(fields: [counterpartyId], references: [id])
+  /// Lo que debería costar (ej. la colegiatura). Opcional.
+  expectedAmount Decimal?
+  /// En MXN. Lo mueve solo el libro mayor.
+  balance        Decimal      @default(0)
+  status         FundStatus   @default(OPEN)
+  closedAt       DateTime?
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  transactions Transaction[]
+
+  @@index([counterpartyId, status])
 }
 
 /// Un abono de alguien que me debe. Puede cubrir uno o varios gastos.

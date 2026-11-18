@@ -10,6 +10,7 @@ import { PrismaClient, Prisma } from "@prisma/client";
 import { paymentInput, transactionInput, type TransactionInput } from "../src/lib/validation";
 import { createTransaction } from "../src/server/services/transactions";
 import { recordPayment } from "../src/server/services/reimbursements";
+import { createFund } from "../src/server/services/funds";
 import { computeNetWorth } from "../src/lib/finance/networth";
 
 const db = new PrismaClient();
@@ -25,6 +26,7 @@ async function main() {
     db.category.deleteMany(),
     db.savingsGoal.deleteMany(),
     db.monthlySnapshot.deleteMany(),
+    db.fund.deleteMany(),
     db.counterparty.deleteMany(),
     db.creditCard.deleteMany(),
     db.account.deleteMany(),
@@ -60,6 +62,10 @@ async function main() {
   // ---------- Personas ----------
   const papa = await db.counterparty.create({ data: { name: "Papá", isFamily: true } });
   const padi = await db.counterparty.create({ data: { name: "Padi" } });
+
+  // ---------- Bolsas: dinero de Papá para fines concretos ----------
+  const colegiatura = await createFund(db, { name: "Colegiatura noviembre", counterpartyId: papa.id, expectedAmount: "34268.58", counterpartyName: null, notes: "Pago al Tec" });
+  const pension = await createFund(db, { name: "Pensión noviembre", counterpartyId: papa.id, expectedAmount: "4040", counterpartyName: null, notes: null });
 
   // ---------- Categorías + presupuesto (Previsto vs Real) ----------
   const expenseCats: [string, number, boolean, "OWN_CAPITAL" | "ALLOWANCE_FAMILY"][] = [
@@ -103,7 +109,10 @@ async function main() {
     { date: "2026-11-06", amount: 3000, description: "Mesada noviembre", category: "Apoyo familiar", type: "INCOME", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
     { date: "2026-11-06", amount: 5000, description: "Aportación a pagaré", category: "Ahorro", type: "TRANSFER", accountId: banco.id, toAccountId: pagare.id },
     { date: "2026-11-07", amount: 1200, description: "Cena de cumpleaños (con mesada)", category: "Salidas", type: "EXPENSE", accountId: banco.id, fundSource: "ALLOWANCE_FAMILY", counterpartyId: papa.id },
-    { date: "2026-11-08", amount: 4040, description: "Pensión noviembre (la adelanté yo)", category: "Educación", type: "REIMBURSABLE_EXPENSE", accountId: banco.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY" },
+    { date: "2026-11-05", amount: 33300, description: "Papá: depósito colegiatura", category: "Educación", type: "FUND_DEPOSIT", accountId: banco.id, fundId: colegiatura.id },
+    { date: "2026-11-08", amount: 4040, description: "Pensión noviembre", category: "Vivienda", type: "FUND_PAYMENT", accountId: banco.id, fundId: pension.id },
+    { date: "2026-11-09", amount: 4040, description: "Papá: depósito pensión", category: "Vivienda", type: "FUND_DEPOSIT", accountId: banco.id, fundId: pension.id },
+    { date: "2026-11-10", amount: "34268.58", description: "Colegiatura Tec noviembre", category: "Educación", type: "FUND_PAYMENT", creditCardId: oro.id, fundId: colegiatura.id },
     { date: "2026-11-09", amount: 1537, description: "Medicinas de Papá", category: "Salud", type: "REIMBURSABLE_EXPENSE", creditCardId: digital.id, counterpartyId: papa.id, fundSource: "ALLOWANCE_FAMILY" },
     { date: "2026-11-10", amount: 890, description: "Súper", category: "Súper", type: "EXPENSE", creditCardId: oro.id },
     { date: "2026-11-11", amount: 100, toAmount: 1830, description: "Cambié dólares a pesos", category: "Cambio de divisa", type: "TRANSFER", accountId: efectivoUSD.id, toAccountId: efectivo.id, fxToMXN: "18.3" },
@@ -124,7 +133,6 @@ async function main() {
   // ---------- Abonos (incluye uno parcial) ----------
   const payments = [
     { date: "2026-11-11", amount: 1537, counterpartyId: papa.id, accountId: banco.id, tx: "Medicinas de Papá" },
-    { date: "2026-11-14", amount: 2500, counterpartyId: papa.id, accountId: banco.id, tx: "Pensión noviembre (la adelanté yo)", notes: "Abono parcial" },
     { date: "2026-11-16", amount: 1200, counterpartyId: padi.id, accountId: banco.id, tx: "Hospedaje fin de semana (compartido con Padi)", notes: "Transferencia de Padi" },
   ];
   for (const { tx, ...p } of payments) {
@@ -149,11 +157,12 @@ async function main() {
   for (const a of accounts) console.log(`  ${a.name.padEnd(22)} ${a.currency} ${a.currentBalance.toFixed(2)}`);
   for (const c of cards) console.log(`  ${c.name.padEnd(22)} deuda ${c.currentBalance.toFixed(2)}`);
   const rates = Object.fromEntries((await db.exchangeRate.findMany()).map((r) => [r.currency, r.rateToMXN])) as Parameters<typeof computeNetWorth>[2];
-  const nw = computeNetWorth(accounts, cards, rates);
+  const nw = computeNetWorth(accounts, cards, rates, await db.fund.findMany());
   const f = (x: Prisma.Decimal) => x.toNumber().toLocaleString("es-MX", { style: "currency", currency: "MXN" });
   console.log(`\nPatrimonio: ${f(nw.netWorth)}  (activos ${f(nw.totalAssets)} − deudas ${f(nw.totalLiabilities)})`);
   console.log(`Efectivo total: ${f(nw.cashMXN)} · Liquidez: ${f(nw.liquidity)} · Por cobrar: ${f(nw.receivables)}`);
   for (const b of nw.byCurrency) console.log(`  ${b.currency}: efectivo ${b.cash.toFixed(2)} · banco ${b.bank.toFixed(2)} · inversión ${b.investments.toFixed(2)} → ${f(b.totalMXN)}`);
+  console.log(`Dinero de terceros en tus cuentas: ${f(nw.thirdPartyHeld)} · Te deben por bolsas: ${f(nw.fundsOwedToMe)}`);
   console.log(`  Movimientos: ${await db.transaction.count()} · Abonos: ${await db.reimbursementPayment.count()}`);
 }
 

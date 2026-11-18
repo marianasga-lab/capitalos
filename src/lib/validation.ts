@@ -32,7 +32,7 @@ const text = (max: number) => z.string().trim().min(1, "Campo obligatorio.").max
 const optText = (max: number) => z.string().trim().max(max).nullish().transform((v) => v || null);
 
 export const currency = z.enum(["MXN", "USD", "EUR"]);
-export const transactionType = z.enum(["INCOME", "EXPENSE", "TRANSFER", "REIMBURSABLE_EXPENSE"]);
+export const transactionType = z.enum(["INCOME", "EXPENSE", "TRANSFER", "REIMBURSABLE_EXPENSE", "FUND_DEPOSIT", "FUND_PAYMENT"]);
 export const fundSource = z.enum(["OWN_CAPITAL", "ALLOWANCE_FAMILY", "SHARED_SPLIT"]);
 export const accountType = z.enum(["CASH", "DEBIT", "INVESTMENT"]); // RECEIVABLE es solo del sistema
 
@@ -55,6 +55,8 @@ export const transactionInput = z.object({
   counterpartyId: optId,
   /** Alternativa rápida: nombre de la persona (se crea si no existe). */
   counterpartyName: optText(60),
+  /** Bolsa de dinero de un tercero (solo FUND_DEPOSIT / FUND_PAYMENT). */
+  fundId: optId,
   notes: optText(500),
 });
 export type TransactionInput = z.input<typeof transactionInput>;
@@ -73,6 +75,27 @@ export const transactionFilters = z.object({
   take: z.number().int().min(1).max(500).default(100),
   skip: z.number().int().min(0).default(0),
 });
+
+// ---------- Bolsas (dinero de terceros) ----------
+export const fundCreate = z.object({
+  name: text(80),
+  counterpartyId: optId,
+  counterpartyName: optText(60),
+  expectedAmount: money.nullish(),
+  notes: optText(300),
+});
+export const fundUpdate = z.object({
+  id,
+  name: text(80).optional(),
+  expectedAmount: money.nullish(),
+  notes: optText(300),
+});
+/**
+ * Cerrar una bolsa. Si no cuadra:
+ *  - KEEP: el sobrante se queda conmigo (cuenta como apoyo familiar)
+ *  - ABSORB: lo que pagué de más lo pongo yo (cuenta como mi gasto)
+ */
+export const fundClose = z.object({ id, date: isoDate, settle: z.enum(["KEEP", "ABSORB"]).nullish() });
 
 // ---------- Reembolsos ----------
 export const paymentInput = z.object({

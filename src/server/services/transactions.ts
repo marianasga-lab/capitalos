@@ -25,13 +25,14 @@ export const toLedger = (t: Transaction): LedgerInput => ({
   creditCardId: t.creditCardId,
   myShareAmount: t.myShareAmount,
   toAmount: t.toAmount,
+  fundId: t.fundId,
 });
 
 /**
  * Valida reglas de negocio y completa lo derivable (moneda, tipo de cambio,
  * persona, estado). Devuelve los datos listos para guardar.
  */
-async function resolve(db: Db, input: TransactionData, previous?: Transaction) {
+async function resolve(db: Db, input: TransactionData, previous?: Transaction, options: { settlement?: boolean } = {}) {
   const { type } = input;
   const { accountId } = input;
   let { toAccountId, creditCardId, toAmount, myShareAmount } = input;
@@ -41,6 +42,8 @@ async function resolve(db: Db, input: TransactionData, previous?: Transaction) {
   if (type !== "TRANSFER") { toAccountId = null; toAmount = null; }
   if (type === "INCOME") creditCardId = null;
   if (type !== "EXPENSE") myShareAmount = null;
+  const isFund = type === "FUND_DEPOSIT" || type === "FUND_PAYMENT";
+  if (type === "FUND_DEPOSIT") creditCardId = null;
 
   const [account, toAccount, card] = await Promise.all([
     accountId ? db.account.findUnique({ where: { id: accountId } }) : null,
@@ -55,10 +58,11 @@ async function resolve(db: Db, input: TransactionData, previous?: Transaction) {
   }
 
   // ----- Reglas por tipo -----
-  if (type === "INCOME" && !account) throw new DomainError("Elige la cuenta donde entró el dinero.");
-  if (type === "EXPENSE" || type === "REIMBURSABLE_EXPENSE") {
+  if (type === "INCOME" && !account && !options.settlement) throw new DomainError("Elige la cuenta donde entró el dinero.");
+  if (type === "FUND_DEPOSIT" && !account) throw new DomainError("Elige la cuenta donde entró el depósito.");
+  if (type === "EXPENSE" || type === "REIMBURSABLE_EXPENSE" || type === "FUND_PAYMENT") {
     if (account && card) throw new DomainError("Elige cuenta o tarjeta, no ambas.");
-    if (!account && !card) throw new DomainError("Elige con qué pagaste: una cuenta o una tarjeta.");
+    if (!account && !card && !options.settlement) throw new DomainError("Elige con qué pagaste: una cuenta o una tarjeta.");
   }
   if (type === "TRANSFER") {
     if (!account) throw new DomainError("Elige la cuenta de origen.");
@@ -75,6 +79,19 @@ async function resolve(db: Db, input: TransactionData, previous?: Transaction) {
     }
   }
 
+  // ----- Bolsa de terceros -----
+  // El ajuste al cerrar una bolsa lo crea solo el servicio de bolsas.
+  const fundId = isFund || options.settlement ? (input.fundId ?? null) : null;
+  let fund = null;
+  if (isFund) {
+    if (!fundId) throw new DomainError("Elige de qué bolsa es este dinero.");
+    fund = await db.fund.findUnique({ where: { id: fundId } });
+    if (!fund) throw new DomainError("La bolsa no existe.");
+    if (fund.status === "CLOSED" && !previous) throw new DomainError(`La bolsa "${fund.name}" está cerrada.`);
+    if (fundSource === "SHARED_SPLIT" || myShareAmount != null) throw new DomainError("Un pago de bolsa no puede ser compartido.");
+    fundSource = "ALLOWANCE_FAMILY";
+  }
+
   // ----- Gasto compartido -----
   if (myShareAmount != null) fundSource = "SHARED_SPLIT";
   if (fundSource === "SHARED_SPLIT") {
@@ -84,8 +101,10 @@ async function resolve(db: Db, input: TransactionData, previous?: Transaction) {
   }
 
   // ----- Persona -----
-  let counterpartyId = input.counterpartyId ?? null;
-  if (!counterpartyId && input.counterpartyName) {
+  let counterpartyId = fund?.counterpartyId ?? input.counterpartyId ?? null;
+  if (fund) {
+    // la persona es la dueña de la bolsa
+  } else if (!counterpartyId && input.counterpartyName) {
     const cp = await db.counterparty.upsert({
       where: { name: input.counterpartyName },
       create: { name: input.counterpartyName },
@@ -100,7 +119,7 @@ async function resolve(db: Db, input: TransactionData, previous?: Transaction) {
   }
 
   // ----- Moneda y tipo de cambio -----
-  const currency = (card ?? account)!.currency;
+  const currency = (card ?? account)?.currency ?? "MXN"; // ajuste de bolsa: MXN
   // Al editar sin tocar la moneda se conserva el tipo de cambio original.
   const fxToMXN = input.fxToMXN
     ? dec(input.fxToMXN)
@@ -124,6 +143,7 @@ async function resolve(db: Db, input: TransactionData, previous?: Transaction) {
     toAmount: toAmount ? dec(toAmount) : null,
     myShareAmount: myShareAmount != null ? dec(myShareAmount) : null,
     counterpartyId,
+    fundId,
     notes: input.notes,
   };
   return { data, archived: [account, toAccount, card].some((x) => x?.archived) };
@@ -142,9 +162,9 @@ function wrapLedger<T>(fn: () => T): T {
   }
 }
 
-export async function createTransaction(db: PrismaClient, input: TransactionData) {
-  return db.$transaction(async (tx) => {
-    const { data, archived } = await resolve(tx, input);
+export async function createTransaction(db: PrismaClient | Prisma.TransactionClient, input: TransactionData, options: { settlement?: boolean } = {}) {
+  const run = async (tx: Prisma.TransactionClient) => {
+    const { data, archived } = await resolve(tx, input, undefined, options);
     if (archived) throw new DomainError("No puedes registrar movimientos en una cuenta o tarjeta archivada.");
     const receivable = await getReceivableAccount(tx);
     const deltas = wrapLedger(() => computeDeltas(ledgerOf(data), receivable.id));
@@ -152,14 +172,16 @@ export async function createTransaction(db: PrismaClient, input: TransactionData
     const row = await tx.transaction.create({ data: { ...data, reimbursementStatus: status } });
     await applyDeltas(tx, deltas);
     return row;
-  });
+  };
+  // Permite usarlo dentro de otra transacción (ej. cerrar una bolsa).
+  return "$transaction" in db ? db.$transaction(run) : run(db);
 }
 
 export async function updateTransaction(db: PrismaClient, id: string, input: TransactionData) {
   return db.$transaction(async (tx) => {
     const old = await tx.transaction.findUnique({ where: { id }, include: { _count: { select: { payments: true } } } });
     if (!old) throw new DomainError("El movimiento no existe.");
-    const { data } = await resolve(tx, input, old);
+    const { data } = await resolve(tx, input, old, { settlement: !!old.fundId && !old.accountId && !old.creditCardId });
     const receivable = await getReceivableAccount(tx);
 
     const newOwed = owedMXN(data);
