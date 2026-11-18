@@ -233,7 +233,7 @@ export async function listTransactions(db: Db, rawFilters: z.input<typeof transa
     ...((f.from || f.to) && {
       date: { ...(f.from && { gte: parseDate(f.from) }), ...(f.to && { lte: parseDate(f.to) }) },
     }),
-    ...(f.search && { description: { contains: f.search } }),
+    ...(f.search && { description: { contains: f.search, mode: "insensitive" } }),
   };
   const [rows, total] = await Promise.all([
     db.transaction.findMany({

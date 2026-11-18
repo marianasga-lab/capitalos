@@ -6,11 +6,13 @@
  *   /api/export?formato=plantilla             → ejemplo para importar
  */
 import { db } from "@/lib/db";
+import { isAuthenticated } from "@/server/auth";
 import { CSV_COLUMNS, exportAll, exportTableCsv, exportTransactionsCsv } from "@/server/services/backup";
 import { toCsv } from "@/lib/csv";
 import { isoLocal } from "@/lib/format";
 
 export async function GET(request: Request) {
+  if (!(await isAuthenticated())) return new Response("No autorizado", { status: 401 });
   const url = new URL(request.url);
   const formato = url.searchParams.get("formato") ?? "json";
   const stamp = isoLocal();

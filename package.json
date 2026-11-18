@@ -14,7 +14,10 @@
     "test": "vitest run",
     "typecheck": "next typegen && tsc --noEmit",
     "db:demo": "tsx prisma/seed.ts --demo --force",
-    "db:vacio": "tsx prisma/seed.ts --empty --force"
+    "db:vacio": "tsx prisma/seed.ts --empty --force",
+    "postinstall": "prisma generate",
+    "vercel-build": "prisma migrate deploy && tsx prisma/bootstrap.ts && next build",
+    "db:bootstrap": "tsx prisma/bootstrap.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -51,5 +54,8 @@
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts --demo"
+  },
+  "engines": {
+    "node": ">=20.9"
   }
 }

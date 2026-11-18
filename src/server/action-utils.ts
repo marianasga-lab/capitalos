@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { DomainError } from "./services/common";
+import { requireSession, UnauthorizedError } from "./auth";
 
 export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string; fieldErrors?: Record<string, string[]> };
 
@@ -29,6 +30,12 @@ export async function runAction<S extends z.ZodType, T>(
   raw: unknown,
   fn: (input: z.output<S>) => Promise<T>,
 ): Promise<ActionResult<Plain<T>>> {
+  try {
+    await requireSession();
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { ok: false, error: e.message };
+    throw e;
+  }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     const flat = z.flattenError(parsed.error);

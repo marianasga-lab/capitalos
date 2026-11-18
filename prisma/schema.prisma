@@ -1,8 +1,6 @@
 // CapitalOS · Esquema de datos
 // ---------------------------------------------------------------
-// Proveedor: SQLite (archivo local `prisma/capitalos.db`).
-// Para migrar a PostgreSQL/Supabase basta con cambiar `provider`
-// a "postgresql" y `DATABASE_URL`. Todo el esquema usa tipos
+// Proveedor: PostgreSQL (Neon en producción; cualquier Postgres en local). Todo el esquema usa tipos
 // portables: Decimal para dinero, enums nativos de Prisma y
 // cuid() como identificadores (sin autoincrementos dependientes
 // del motor).
@@ -18,8 +16,11 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Conexión con pool (la que usa la app). En Vercel + Neon la crea la integración.
+  url       = env("DATABASE_URL")
+  // Conexión directa (migraciones).
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 // ---------- Enums ----------
@@ -72,9 +73,9 @@ model Account {
   name           String
   type           AccountType
   currency       Currency    @default(MXN)
-  currentBalance Decimal     @default(0)
+  currentBalance Decimal     @default(0) @db.Decimal(16, 2)
   /// Tasa anual estimada (ej. 0.105 = 10.5 %). Solo aplica a INVESTMENT.
-  interestRate   Decimal?
+  interestRate   Decimal?    @db.Decimal(9, 6)
   /// true = cuenta del sistema ("Cuentas por Cobrar"). No se puede borrar.
   isSystem       Boolean     @default(false)
   archived       Boolean     @default(false)
@@ -95,16 +96,16 @@ model Account {
 model CreditCard {
   id             String   @id @default(cuid())
   name           String
-  limit          Decimal
+  limit          Decimal  @db.Decimal(16, 2)
   currency       Currency @default(MXN)
   /// Día de corte (1–31). Si el mes es más corto, se usa el último día.
   cutoffDay      Int
   /// Día límite de pago (1–31).
   paymentDueDay  Int
   /// CAT / tasa anual (ej. 0.65 = 65 %).
-  interestRate   Decimal
+  interestRate   Decimal  @db.Decimal(9, 6)
   /// Deuda vigente. Sube con cada cargo y baja con cada pago.
-  currentBalance Decimal  @default(0)
+  currentBalance Decimal  @default(0) @db.Decimal(16, 2)
   archived       Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -117,7 +118,7 @@ model CreditCard {
 model Transaction {
   id          String          @id @default(cuid())
   date        DateTime
-  amount      Decimal
+  amount      Decimal         @db.Decimal(16, 2)
   description String
   category    String
   type        TransactionType
@@ -130,7 +131,7 @@ model Transaction {
   // `amount` está en la moneda de la cuenta/tarjeta. Guardamos el tipo de
   // cambio del día para que los reportes históricos no cambien después.
   currency Currency @default(MXN)
-  fxToMXN  Decimal  @default(1)
+  fxToMXN  Decimal  @default(1) @db.Decimal(14, 6)
 
   /// Persona relacionada: quién aportó el dinero (ALLOWANCE_FAMILY),
   /// quién me debe (REIMBURSABLE_EXPENSE) o con quién dividí (SHARED_SPLIT).
@@ -143,7 +144,7 @@ model Transaction {
   fund   Fund?   @relation(fields: [fundId], references: [id])
 
   /// Solo SHARED_SPLIT: lo que me toca a mí. El resto queda por cobrar.
-  myShareAmount Decimal?
+  myShareAmount Decimal? @db.Decimal(16, 2)
 
   // Origen (EXPENSE / REIMBURSABLE / TRANSFER) o destino (INCOME).
   // Es opcional porque un gasto con tarjeta no sale de ninguna cuenta.
@@ -152,7 +153,7 @@ model Transaction {
 
   /// Solo TRANSFER entre monedas distintas: monto que llega al destino
   /// (ej. salen 100 USD, llegan 1,830 MXN). Si falta, llega `amount`.
-  toAmount Decimal?
+  toAmount Decimal? @db.Decimal(16, 2)
 
   // Destino de un TRANSFER. Mueve saldo sin alterar el Net Worth.
   toAccountId String?
@@ -165,7 +166,7 @@ model Transaction {
   // ----- Reembolsos -----
   reimbursementStatus ReimbursementStatus    @default(NOT_APPLICABLE)
   /// Suma de abonos recibidos, en MXN. PAID cuando cubre lo adeudado.
-  amountReimbursed    Decimal                @default(0)
+  amountReimbursed    Decimal                @default(0) @db.Decimal(16, 2)
   reimbursedAt        DateTime?
   /// Cuenta donde entró el dinero al marcarlo como "Cobrado".
   reimbursedToId      String?
@@ -213,9 +214,9 @@ model Fund {
   counterpartyId String
   counterparty   Counterparty @relation(fields: [counterpartyId], references: [id])
   /// Lo que debería costar (ej. la colegiatura). Opcional.
-  expectedAmount Decimal?
+  expectedAmount Decimal?     @db.Decimal(16, 2)
   /// En MXN. Lo mueve solo el libro mayor.
-  balance        Decimal      @default(0)
+  balance        Decimal      @default(0) @db.Decimal(16, 2)
   status         FundStatus   @default(OPEN)
   closedAt       DateTime?
   notes          String?
@@ -231,9 +232,9 @@ model Fund {
 model ReimbursementPayment {
   id             String       @id @default(cuid())
   date           DateTime
-  amount         Decimal
+  amount         Decimal      @db.Decimal(16, 2)
   /// Tipo de cambio a MXN de la cuenta que recibió el abono, ese día.
-  fxToMXN        Decimal      @default(1)
+  fxToMXN        Decimal      @default(1) @db.Decimal(14, 6)
   counterpartyId String
   counterparty   Counterparty @relation(fields: [counterpartyId], references: [id])
   /// Cuenta donde entró el dinero.
@@ -260,7 +261,7 @@ model Category {
   name              String
   kind              CategoryKind
   /// Presupuesto mensual por defecto (en MXN).
-  defaultBudget     Decimal?
+  defaultBudget     Decimal?     @db.Decimal(16, 2)
   /// Fuente de fondos sugerida al registrar (ej. "extras papi" → familia).
   defaultFundSource FundSource   @default(OWN_CAPITAL)
   isFixed           Boolean      @default(false)
@@ -278,7 +279,7 @@ model Budget {
   category      Category @relation(fields: [categoryId], references: [id])
   month         Int
   year          Int
-  plannedAmount Decimal
+  plannedAmount Decimal  @db.Decimal(16, 2)
 
   @@unique([categoryId, year, month])
 }
@@ -288,8 +289,8 @@ model Budget {
 model SavingsGoal {
   id            String    @id @default(cuid())
   name          String
-  targetAmount  Decimal
-  currentAmount Decimal   @default(0)
+  targetAmount  Decimal   @db.Decimal(16, 2)
+  currentAmount Decimal   @default(0) @db.Decimal(16, 2)
   deadline      DateTime?
   /// Cuenta que respalda la meta (opcional).
   accountId     String?
@@ -304,13 +305,13 @@ model MonthlySnapshot {
   id               String   @id @default(cuid())
   month            Int // 1–12
   year             Int
-  totalAssets      Decimal
-  totalLiabilities Decimal
-  netWorth         Decimal
+  totalAssets      Decimal  @db.Decimal(16, 2)
+  totalLiabilities Decimal  @db.Decimal(16, 2)
+  netWorth         Decimal  @db.Decimal(16, 2)
   /// Porcentaje de ahorro del mes (0.25 = 25 %).
-  savingsRate      Decimal
-  totalIncome      Decimal  @default(0)
-  totalExpenses    Decimal  @default(0)
+  savingsRate      Decimal  @db.Decimal(12, 6)
+  totalIncome      Decimal  @default(0) @db.Decimal(16, 2)
+  totalExpenses    Decimal  @default(0) @db.Decimal(16, 2)
   createdAt        DateTime @default(now())
 
   @@unique([year, month])
@@ -322,6 +323,18 @@ model MonthlySnapshot {
 model ExchangeRate {
   currency  Currency @id
   /// Cuántos MXN vale 1 unidad de esta moneda.
-  rateToMXN Decimal
+  rateToMXN Decimal  @db.Decimal(14, 6)
   updatedAt DateTime @updatedAt
+}
+
+// ---------- Seguridad: intentos de inicio de sesión ----------
+// Limita la fuerza bruta: demasiados fallos desde una IP bloquean un rato.
+
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  ip        String
+  success   Boolean
+  createdAt DateTime @default(now())
+
+  @@index([ip, createdAt])
 }

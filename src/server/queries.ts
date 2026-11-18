@@ -4,6 +4,7 @@ import "server-only";
  * poder pasarlos a componentes cliente.
  */
 import { db } from "@/lib/db";
+import { requirePageSession } from "./auth";
 import { computeNetWorth } from "@/lib/finance/networth";
 import { cardCycle, type CardMovement } from "@/lib/finance/cards";
 import { getRates } from "./services/common";
@@ -41,6 +42,7 @@ function plainStats(s: Awaited<ReturnType<typeof monthStats>>) {
 }
 
 export async function getDashboard() {
+  await requirePageSession();
   const { year, month } = currentPeriod();
   const prev = prevPeriod(year, month);
   const [{ nw }, cur, last, snapshots, people, funds, recent] = await Promise.all([
@@ -166,6 +168,7 @@ export type Dashboard = Awaited<ReturnType<typeof getDashboard>>;
 
 /** Patrimonio con desglose por moneda y lista de cuentas. */
 export async function getNetWorthDetail() {
+  await requirePageSession();
   const { nw, accounts, cards, rates } = await netWorthNow();
   const funds = await fundSummaries(db, { status: "OPEN" });
   return {
@@ -199,6 +202,7 @@ export async function getNetWorthDetail() {
 
 /** Opciones para el registro rápido. */
 export async function getEntryOptions() {
+  await requirePageSession();
   const [accounts, cards, categories, people, funds, rates] = await Promise.all([
     db.account.findMany({ where: { archived: false, isSystem: false }, orderBy: [{ type: "asc" }, { name: "asc" }] }),
     db.creditCard.findMany({ where: { archived: false }, orderBy: { name: "asc" } }),
@@ -219,6 +223,7 @@ export async function getEntryOptions() {
 export type EntryOptions = Awaited<ReturnType<typeof getEntryOptions>>;
 
 export async function getTransactionsPage(params: { year: number; month: number; type?: string; q?: string }) {
+  await requirePageSession();
   const from = `${params.year}-${String(params.month).padStart(2, "0")}-01`;
   const lastDay = new Date(params.year, params.month, 0).getDate();
   const to = `${params.year}-${String(params.month).padStart(2, "0")}-${lastDay}`;
@@ -230,6 +235,7 @@ export async function getTransactionsPage(params: { year: number; month: number;
 }
 
 export async function getFundsPage() {
+  await requirePageSession();
   const [all, people] = await Promise.all([fundSummaries(db), db.counterparty.findMany({ orderBy: { name: "asc" } })]);
   return { funds: all.map(plainFund), people: people.map((p) => ({ id: p.id, name: p.name })) };
 }
@@ -237,6 +243,7 @@ export async function getFundsPage() {
 // ---------- Tarjetas ----------
 
 export async function getCardsOverview(today = new Date()) {
+  await requirePageSession();
   const cards = await db.creditCard.findMany({
     where: { archived: false },
     orderBy: { name: "asc" },
@@ -273,6 +280,7 @@ export type CardOverview = Awaited<ReturnType<typeof getCardsOverview>>[number];
 
 // ---------- Metas ----------
 export async function getGoalsPage(today = new Date()) {
+  await requirePageSession();
   const [goals, snapshots] = await Promise.all([
     db.savingsGoal.findMany({ orderBy: [{ deadline: "asc" }, { createdAt: "asc" }], include: { account: true } }),
     db.monthlySnapshot.findMany({ orderBy: [{ year: "desc" }, { month: "desc" }], take: 3 }),
@@ -326,6 +334,7 @@ export type GoalsPage = Awaited<ReturnType<typeof getGoalsPage>>;
 
 // ---------- Ajustes ----------
 export async function getSettings() {
+  await requirePageSession();
   const [accounts, cards, rates, snapshots] = await Promise.all([
     db.account.findMany({ where: { isSystem: false }, orderBy: [{ archived: "asc" }, { type: "asc" }, { name: "asc" }] }),
     db.creditCard.findMany({ orderBy: [{ archived: "asc" }, { name: "asc" }] }),

@@ -2,7 +2,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
-import { ArrowLeftRight, CreditCard, Landmark, LayoutGrid, Plus, Settings, Target, Wallet } from "lucide-react";
+import { ArrowLeftRight, CreditCard, Landmark, LayoutGrid, LogOut, Plus, Settings, Target, Wallet } from "lucide-react";
+import { logoutAction } from "@/actions/auth";
 import { ThemeToggle } from "./theme-toggle";
 import { useQuickEntry } from "./quick-entry/context";
 
@@ -70,7 +71,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="mt-auto flex flex-col gap-4 px-2">
           <NewEntryButton />
-          <ThemeToggle />
+          <div className="flex items-center justify-between">
+            <ThemeToggle />
+            <form action={logoutAction}>
+              <button className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" title="Cerrar sesión">
+                <LogOut className="size-3.5" aria-hidden /> Salir
+              </button>
+            </form>
+          </div>
         </div>
       </aside>
 
@@ -80,6 +88,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Link href="/" className="text-[16px] font-semibold tracking-[-0.02em]">CapitalOS</Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />
+            <form action={logoutAction}>
+              <button className="grid size-9 place-items-center rounded-md text-muted-foreground hover:text-foreground" title="Cerrar sesión">
+                <LogOut className="size-4" aria-hidden /><span className="sr-only">Cerrar sesión</span>
+              </button>
+            </form>
             <NewEntryButton compact />
           </div>
         </div>

@@ -1,13 +1,26 @@
 # CapitalOS
 
-Finanzas personales y patrimonio (Net Worth). Next.js 16 + Prisma 6 + SQLite.
+Finanzas personales y patrimonio. Next.js 16 + Prisma 6 + PostgreSQL. Protegida con contraseña.
 
-## Arrancar
+## Publicar en Vercel (para usarla desde el celular)
+1. En vercel.com, entra con tu cuenta de GitHub → **Add New… → Project** → importa `capitalos`.
+2. Antes de **Deploy**, en **Environment Variables** agrega `APP_PASSWORD` (mínimo 12 caracteres).
+3. Deploy (el primero puede fallar porque aún no hay base de datos; es normal).
+4. En el proyecto: **Storage → Create Database → Neon (Postgres)** → conéctala al proyecto.
+   Esto crea `DATABASE_URL` y `DATABASE_URL_UNPOOLED`.
+5. **Deployments → ⋯ → Redeploy**. Cada deploy aplica las migraciones y prepara la base (sin borrar nada).
+6. Abre la URL, entra con tu contraseña y en el celular: *Compartir → Agregar a pantalla de inicio*.
+
+Cada `git push` a `main` publica una versión nueva automáticamente.
+Para cambiar la contraseña: cambia `APP_PASSWORD` en Vercel y haz Redeploy (cierra todas las sesiones).
+
+## Desarrollo local
+Necesitas PostgreSQL (local o una rama de Neon).
 ```bash
 npm install
-npx prisma migrate dev     # crea prisma/capitalos.db
-npm run db:seed            # datos de prueba ficticios
-npm run dev                # http://localhost:3000
+cp .env.example .env      # llena DATABASE_URL, DATABASE_URL_UNPOOLED y APP_PASSWORD
+npx prisma migrate dev    # crea las tablas y carga datos de prueba
+npm run dev               # http://localhost:3000
 ```
 
 ## Pantallas
@@ -21,22 +34,23 @@ npm run dev                # http://localhost:3000
 - **Registro rápido**: `Ctrl K` (o `⌘ K`) desde cualquier pantalla.
 
 ## Empezar con tus datos reales
-```bash
-npm run db:vacio   # BORRA todo y deja la app lista (categorías y tipos de cambio)
-```
-Luego, en **Ajustes**, da de alta tus cuentas (con su saldo de hoy) y tus tarjetas (con su deuda de hoy).
-Para volver a los datos de prueba: `npm run db:demo` (también borra todo).
+En producción la base empieza vacía (con categorías y tipos de cambio). En **Ajustes**, da de alta
+tus cuentas (con su saldo de hoy) y tus tarjetas (con su deuda de hoy).
+
+En local: `npm run db:vacio` (borra todo) o `npm run db:demo` (borra y carga datos de prueba).
 `npm run db:seed` nunca borra: si ya hay datos, no hace nada.
 
 ## Respaldo
 - **Ajustes → Respaldo completo (.json)**: copia exacta, sirve para restaurar.
 - **Movimientos (.csv)**: se abre en Excel y se puede volver a importar.
 - **Importar CSV**: revisa el archivo, muestra errores por línea y guarda todo o nada. Descarga la plantilla para ver el formato.
-- El archivo `prisma/capitalos.db` también es tu base completa: copiarlo es un respaldo.
+- Neon también guarda historial de la base (puedes restaurar a un punto anterior desde su panel).
 
-## Tu base de datos
-Es un solo archivo: `prisma/capitalos.db` (no se sube a git). Para respaldarla, cópialo.
-Para migrar a PostgreSQL: cambia `provider` en `prisma/schema.prisma` y `DATABASE_URL`.
+## Seguridad
+- Una sola contraseña (`APP_PASSWORD`). La sesión es una cookie firmada, `httpOnly` y `secure`, por 30 días.
+- Se verifica en tres capas: `src/proxy.ts`, cada Server Action (`runAction`) y cada lectura de datos.
+- Tras 8 intentos fallidos desde una IP (o 40 en total) se bloquea el acceso 15 minutos.
+- La app pide no aparecer en buscadores.
 
 ## Reglas del libro mayor
 Todas viven en `src/lib/finance/ledger.ts`. Cada movimiento cambia saldos dentro de una
@@ -47,7 +61,7 @@ transacción de base de datos; los saldos nunca se editan a mano.
 npm test          # 48 pruebas: saldos, monedas, reembolsos, bolsas, tarjetas, respaldo
 npm run typecheck
 ```
-Usan su propia base (`prisma/test.db`), nunca la tuya.
+Usan su propia base (`capitalos_test` o `TEST_DATABASE_URL`), nunca la tuya.
 
 ## Arquitectura
 | Capa | Carpeta | Qué hace |
@@ -62,4 +76,3 @@ Reglas clave:
 - Un gasto reembolsable o compartido manda lo adeudado a "Cuentas por Cobrar" (en MXN);
   los abonos lo regresan a una cuenta real. Se permiten abonos parciales.
 - No se puede borrar un gasto con abonos ni una cuenta con movimientos (se archiva).
-- Sin login: la app es para uso local. Antes de publicarla en internet hay que agregar autenticación.
