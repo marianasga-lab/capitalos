@@ -10,6 +10,13 @@ npm run db:seed            # datos de prueba ficticios
 npm run dev                # http://localhost:3000
 ```
 
+## Pantallas
+- **Resumen** (`/`): fortuna neta, liquidez, inversiones, por cobrar, flujo del mes (capital propio vs. apoyo familiar), Runway, evolución mensual, quién te debe y bolsas.
+- **Patrimonio** (`/patrimonio`): efectivo en pesos, dólares y euros; dinero por moneda; activos y pasivos.
+- **Movimientos** (`/movimientos`): libro mayor por mes, con filtros, edición y borrado.
+- **Bolsas** (`/bolsas`): dinero de terceros (ej. la colegiatura que deposita Papá) y si cuadra.
+- **Registro rápido**: `Ctrl K` (o `⌘ K`) desde cualquier pantalla.
+
 ## Tu base de datos
 Es un solo archivo: `prisma/capitalos.db` (no se sube a git). Para respaldarla, cópialo.
 Para migrar a PostgreSQL: cambia `provider` en `prisma/schema.prisma` y `DATABASE_URL`.
